@@ -21,23 +21,14 @@ from osgeo import ogr
 from osgeo import osr
 
 class Polyfile:
-    def __init__(self, minlon, maxlon, minlat, maxlat):
+    def __init__(self):
         self.filename = None
-        self.name = 'bbox'
-        self.polygons = ogr.Geometry(ogr.wkbMultiPolygon)
-        
-        self.__create_from_boundaries(minlon, maxlon, minlat, maxlat)
-    
-    
-    def __init__(self, filename):
-        self.filename = filename
         self.name = None
         self.polygons = ogr.Geometry(ogr.wkbMultiPolygon)
-        
-        self.__read_poly()
     
     
-    def __create_from_boundaries(self, minlon, maxlon, minlat, maxlat):
+    def set_boundaries(self, minlon, maxlon, minlat, maxlat):
+        self.name = 'bbox'
         polygon = ogr.Geometry(ogr.wkbPolygon)
         poly_section = ogr.Geometry(ogr.wkbLinearRing)
         poly_section.AddPoint(minlon, minlat)
@@ -47,7 +38,14 @@ class Polyfile:
         poly_section.AddPoint(minlon, minlat)
         polygon.AddGeometry(poly_section)
         self.polygons.AddGeometry(polygon)
-
+    
+    
+    def read_file(self, filename):
+        self.filename = filename
+        self.polygons = ogr.Geometry(ogr.wkbMultiPolygon)
+        
+        self.__read_poly()
+    
     
     def __read_poly(self):
         with open(self.filename, 'r') as f:
@@ -117,17 +115,57 @@ class Polyfile:
 
 
 
-class DatabaseInput:
-    def __init__(self, connectstring, tablename, elevation_column, contour_column, boundaries = None):
-        self.datasource = ogr.Open(connectstring, 0)  # 0 means read-only
-        if not self.datasource:
-            logging.error("Unable to open OGR datasource '%s'" % source)
-    
-        self.tablename = tablename
-        self.elevation_column = elevation_column
-        self.contour_column = contour_column
-        
+class DataSource:
+    def __init__(self, datasource, layername, preferred_feat, preferred_geom, srs, boundaries):
+        self.datasource = ogr.Open(datasource, 0)  # 0 means read-only
+        self.driver = self.datasource.GetDriver()
+        self.layername = layername
+        self.featname = None
+        self.geomname = None
+        self.srs = srs
         self.boundaries = boundaries
+        
+        self.__get_layer_features(preferred_feat, preferred_geom)
+        
+
+    def __get_layer_features(self, preferred_feat, preferred_geom):
+        layer = None
+        if not self.layername:
+            if self.datasource.GetLayerCount() > 0:
+                layer = self.datasource.GetLayer(0)
+                self.layername = layer.GetName()
+            else:
+                logging.error("No layer found and none was given.")
+        else:
+            layer = self.datasource.GetLayer(self.layername)
+        logging.info("Using layer %s" % self.layername)
+
+        layerdef = layer.GetLayerDefn()
+        
+        features_without_id = \
+            [ layerdef.GetFieldDefn(i).GetName() \
+                    for i in range(layerdef.GetFieldCount()) \
+                    if layerdef.GetFieldDefn(i).GetName().lower() != 'id' ]
+
+        if preferred_feat and preferred_feat in features_without_id:
+            self.featname = preferred_feat
+        elif len(features_without_id) == 0:
+            logging.error("No feature found and none was given.")
+        else:
+            self.featname = features_without_id[0]
+            if len(features_without_id) > 1:
+                logging.warning("More than one feature found, using %s" % self.featname)
+        
+        geoms = [ layerdef.GetGeomFieldDefn(i).GetName() \
+                        for i in range(layerdef.GetGeomFieldCount()) ]
+        if preferred_geom and preferred_geom in geoms:
+            self.geomname = preferred_geom
+        elif len(geoms) == 0:
+            logging.error("No geometry found and none was given.")
+        else:
+            self.geomname = geoms[0]
+            if len(geoms) > 1:
+                logging.warning("More than one geometry found, using %s" % self.geomname)
     
     
     def __get_query(self):
@@ -137,45 +175,31 @@ class DatabaseInput:
             sql = '''select %s, ST_Intersection(%s, p.polyline)
 from (select ST_GeomFromText(\'%s\', 4326)  polyline) p, %s
 where ST_Intersects(%s, p.polyline)''' % \
-                (self.elevation_column, self.contour_column, \
-                self.boundaries.to_wkt_string(), self.tablename, \
-                self.contour_column)
+                (self.featname, self.geomname, \
+                self.boundaries.to_wkt_string(), self.layername, \
+                self.geomname)
         else:
             sql = 'select %s, %s from %s' % \
-                (self.elevation_column, self.contour_column, self.tablename)
+                (self.featname, self.geomname, self.layername)
 
         return sql
 
 
     def fetch_data(self):
-        layer = self.datasource.ExecuteSQL(self.__get_query())
-        layer.ResetReading()
-        
-        return [ layer ]
-    
-    
-
-# this class does not (yet) support raster files
-class FileInput:
-    def __init__(self, filename, srs = 4326, boundaries = None):
-        self.datasource = ogr.Open(filename, 0)  # 0 means read-only
-        self.srs = 4326
-        self.boundaries = boundaries
-
-
-    def fetch_data(self):
-        layers = []
-        for i in range(self.datasource.GetLayerCount()):
-            layer = self.datasource.GetLayer(i)
+        layer = None
+        if self.driver.GetName() == 'PostgreSQL':
+            layer = self.datasource.ExecuteSQL(self.__get_query())
+        else:
+            layer = self.datasource.GetLayer(self.layername)
             
             if self.boundaries:
                 # TODO: see https://gis.stackexchange.com/questions/82935/ogr-layer-intersection
-                layer.SetSpatialFilter(ogr.CreateGeometryFromWkt(self.boundaries.to_wkt_string(self.srs)))
+                wkt = self.boundaries.to_wkt_string(self.srs)
+                geometry = ogr.CreateGeometryFromWkt(wkt)
+                layer.SetSpatialFilter(0, geometry)
 
-            layer.ResetReading()
-            layers.append(layer)
-        
-        return layers
+        layer.ResetReading()
+        return layer
 
 
 
@@ -258,26 +282,12 @@ class Transformation:
     
     
     def process(self):
-        layers = self.data_input.fetch_data()
-        
-        for layer in layers:
-            # get feature fields from layer
-            feature_definition = layer.GetLayerDefn()
-            feature_fields = []
-            for j in range(feature_definition.GetFieldCount()):
-                feature_fields.append(feature_definition.GetFieldDefn(j).GetNameRef())
-            
-            # there should be at least 1 feature field and this is considered to be the height
-            if len(feature_fields) == 0:
-                logging.error("No fields present in feature")
-            elif len(feature_fields) > 1:
-                logging.warning("Feature contains more than 1 field, considering '%s' as elevation" % \
-                                feature_fields[-1])
+        layer = self.data_input.fetch_data()
 
-            # loop through layer features
-            for j in range(layer.GetFeatureCount()):
-                ogrfeature = layer.GetNextFeature()
-                self.__process_feature(ogrfeature[feature_fields[-1]], ogrfeature)
+        # loop through layer features
+        for j in range(layer.GetFeatureCount()):
+            ogrfeature = layer.GetNextFeature()
+            self.__process_feature(ogrfeature[self.data_input.featname], ogrfeature)
 
 
 
@@ -285,16 +295,14 @@ class Transformation:
 
 parser = argparse.ArgumentParser(description = 'Write contour lines from a file or databse source ' + \
                                                'to an osm file')
-parser.add_argument('--db', dest = 'connectstring', help = 'Database connectstring')
-parser.add_argument('--db-table', dest = 'dbtable', default = 'elevation', \
-                    help = 'Database table containing the contour data')
-parser.add_argument('--db-height-column', dest = 'dbheightcolumn', default = 'height', \
-                    help = 'Database column containg the elevation')
-parser.add_argument('--db-contour-column', dest = 'dbcontourcolumn', default = 'geom', \
-                    help = 'Database column containing the contour')
-parser.add_argument('--sourcefile', dest = 'sourcefile', \
-                    help = 'Filename containing the contour data, only taken into account ' + \
-                           'when --db is not given')
+parser.add_argument('--datasource', dest = 'datasource', help = 'Database connectstring or filename')
+parser.add_argument('--layername', dest = 'layername', \
+                    help = 'Database table or layer name containing the contour data. ' + \
+                           'If omitted the first layer will be taken')
+parser.add_argument('--layer-feature', dest = 'layerfeat', \
+                    help = 'Database column or layer feature containg the elevation')
+parser.add_argument('--layer-geom', dest = 'layergeom', \
+                    help = 'Database column or layer geometry containing the contour')
 parser.add_argument('--src-srs', dest = 'srcsrs', type = int, default = 4326, \
                     help = 'EPSG code of input data. Do not include the EPSG: prefix.')
 parser.add_argument('--dst-srs', dest = 'dstsrs', type = int, default = 4326, \
@@ -305,14 +313,16 @@ args = parser.parse_args()
 
 poly = None
 if args.poly:
-    poly = Polyfile(args.poly)
+    poly = Polyfile()
+    poly.read_file(args.poly)
+    #poly.set_boundaries(6.051, 6.1232, 50.4792, 50.5191)
 
-data_input = None
-if args.connectstring:
-    data_input = DatabaseInput(args.connectstring, \
-                               args.dbtable, args.dbheightcolumn, args.dbcontourcolumn, poly)
-else:
-    data_input = FileInput(args.sourcefile, args.srcsrs, poly)
+data_input = DataSource(args.datasource, args.layername, args.layerfeat, args.layergeom, args.srcsrs, poly)
+#if args.connectstring:
+#    data_input = DatabaseInput(args.connectstring, \
+#                               args.dbtable, args.dbheightcolumn, args.dbcontourcolumn, poly)
+#else:
+#    data_input = FileInput(args.sourcefile, args.srcsrs, poly)
 
 data_output = OsmOutput('test.osm')
 
