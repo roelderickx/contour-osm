@@ -17,6 +17,8 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 import sys, os, argparse, logging
+import matplotlib.pyplot as pyplot
+from osgeo import gdalconst
 from osgeo import ogr
 from osgeo import osr
 
@@ -87,37 +89,43 @@ class Polyfile:
 
 
     def to_wkt_string(self, srs = 4326):
-        src_srs = osr.SpatialReference()
-        src_srs.ImportFromEPSG(4326)
+        if srs != 4326:
+            src_srs = osr.SpatialReference()
+            src_srs.ImportFromEPSG(4326)
 
-        dest_srs = osr.SpatialReference()
-        dest_srs.ImportFromEPSG(srs)
+            dest_srs = osr.SpatialReference()
+            dest_srs.ImportFromEPSG(srs)
 
-        transform = osr.CoordinateTransformation(src_srs, dest_srs)
-        polygons = ogr.CreateGeometryFromWkt(self.polygons.ExportToWkt())
-        polygons.Transform(transform)
+            transform = osr.CoordinateTransformation(src_srs, dest_srs)
+            polygons = ogr.CreateGeometryFromWkt(self.polygons.ExportToWkt())
+            polygons.Transform(transform)
 
-        return polygons.ExportToWkt()
+            return polygons.ExportToWkt()
+        else:
+            return self.polygons.ExportToWkt()
 
 
     def to_wkb_string(self, srs = 4326):
-        src_srs = osr.SpatialReference()
-        src_srs.ImportFromEPSG(4326)
+        if srs != 4326:
+            src_srs = osr.SpatialReference()
+            src_srs.ImportFromEPSG(4326)
 
-        dest_srs = osr.SpatialReference()
-        dest_srs.ImportFromEPSG(srs)
+            dest_srs = osr.SpatialReference()
+            dest_srs.ImportFromEPSG(srs)
 
-        transform = osr.CoordinateTransformation(src_srs, dest_srs)
-        polygons = ogr.CreateGeometryFromWkt(self.polygons.ExportToWkt())
-        polygons.Transform(transform)
+            transform = osr.CoordinateTransformation(src_srs, dest_srs)
+            polygons = ogr.CreateGeometryFromWkt(self.polygons.ExportToWkt())
+            polygons.Transform(transform)
 
-        return ''.join(format(x, '02x') for x in polygons.ExportToWkb())
+            return ''.join(format(x, '02x') for x in polygons.ExportToWkb())
+        else:
+            return ''.join(format(x, '02x') for x in self.polygons.ExportToWkb())
 
 
 
 class DataSource:
     def __init__(self, datasource, layername, preferred_feat, preferred_geom, srs, boundaries):
-        self.datasource = ogr.Open(datasource, 0)  # 0 means read-only
+        self.datasource = ogr.Open(datasource, gdalconst.GA_ReadOnly)
         self.driver = self.datasource.GetDriver()
         self.layername = layername
         self.featname = None
@@ -171,6 +179,8 @@ class DataSource:
     def __get_query(self):
         sql = ''
         
+        # TODO: it appears as if longitude and latitude are switched on the database
+        # why? and is this always the case?
         if self.boundaries:
             sql = '''select %s, ST_Intersection(%s, p.polyline)
 from (select ST_GeomFromText(\'%s\', 4326)  polyline) p, %s
@@ -182,24 +192,92 @@ where ST_Intersects(%s, p.polyline)''' % \
             sql = 'select %s, %s from %s' % \
                 (self.featname, self.geomname, self.layername)
 
+        logging.info('Generated SQL statement: %s' % sql)
+        
         return sql
 
 
+    def __calc_layer_intersection(self, layer, geometry):
+        #layer.SetSpatialFilter(geometry)
+        #return layer
+        
+        dst_driver = ogr.GetDriverByName('MEMORY')
+        dst_datasource = dst_driver.CreateDataSource('memdata')
+        #tmp = dst_driver.Open('memdata', gdalconst.GA_Update)
+        dst_layer = dst_datasource.CreateLayer(layer.GetName(), geom_type = ogr.wkbMultiLineString)
+        dst_layer_def = dst_layer.GetLayerDefn()
+        
+        # add input layer field definitions to the output layer
+        src_layer_def = layer.GetLayerDefn()
+        for i in range(src_layer_def.GetFieldCount()):
+            src_field_def = src_layer_def.GetFieldDefn(i)
+            dst_layer.CreateField(src_field_def)
+        
+        # add intersection of input layer features with input geometry to output layer
+        amount_intersections = 0
+        for j in range(layer.GetFeatureCount()):
+            src_feature = layer.GetNextFeature()
+            src_geometry = src_feature.GetGeometryRef()
+
+            if src_geometry.Intersects(geometry):
+                amount_intersections += 1
+                intersection = geometry.Intersection(src_geometry)
+                
+                dst_feature = ogr.Feature(dst_layer_def)
+                for k in range(dst_layer_def.GetFieldCount()):
+                    dst_field = dst_layer_def.GetFieldDefn(k)
+                    dst_feature.SetField(dst_field.GetNameRef(), src_feature.GetField(k))
+                dst_feature.SetGeometry(geometry) #intersection)
+
+                dst_layer.CreateFeature(dst_feature)
+                dst_feature = None
+
+            src_feature = None
+
+        dst_datasource = None
+        
+        logging.info('Amount of features in source: %d' % layer.GetFeatureCount())
+        logging.info('Amount of intersections found: %d' % amount_intersections)
+        
+        return dst_layer
+    
+    
     def fetch_data(self):
         layer = None
         if self.driver.GetName() == 'PostgreSQL':
             layer = self.datasource.ExecuteSQL(self.__get_query())
         else:
-            layer = self.datasource.GetLayer(self.layername)
+            src_layer = self.datasource.GetLayer(self.layername)
             
             if self.boundaries:
-                # TODO: see https://gis.stackexchange.com/questions/82935/ogr-layer-intersection
                 wkt = self.boundaries.to_wkt_string(self.srs)
                 geometry = ogr.CreateGeometryFromWkt(wkt)
-                layer.SetSpatialFilter(0, geometry)
+                layer = self.__calc_layer_intersection(src_layer, geometry)
+            else:
+                layer = src_layer
 
         layer.ResetReading()
+        
         return layer
+
+
+
+class MatplotOutput:
+    def __init__(self):
+        pyplot.title('Contours data plot')
+    
+    
+    def add_geometry(self, height, geometry):
+        x = []
+        y = []
+        for i in range(geometry.GetPointCount()):
+             x.append(geometry.GetX(i))
+             y.append(geometry.GetY(i))
+        pyplot.plot(x, y)
+
+
+    def flush(self):
+        pyplot.show() 
 
 
 
@@ -212,6 +290,10 @@ class OsmOutput:
     def add_geometry(self, height, geometry):
         print(height)
         print(geometry)
+    
+    
+    def flush(self):
+        pass
 
 
 
@@ -244,7 +326,7 @@ class Transformation:
                 dest_spatial_ref.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
             except AttributeError:
                 pass
-            # Destionation projection will *always* be EPSG:4326, WGS84 lat-lon
+            # Destination projection will *always* be EPSG:4326, WGS84 lat-lon
             dest_spatial_ref.ImportFromEPSG(dst_srs)
             coordTrans = osr.CoordinateTransformation(spatial_ref, dest_spatial_ref)
             self.reproject = lambda geometry: geometry.Transform(coordTrans)
@@ -288,10 +370,14 @@ class Transformation:
         for j in range(layer.GetFeatureCount()):
             ogrfeature = layer.GetNextFeature()
             self.__process_feature(ogrfeature[self.data_input.featname], ogrfeature)
+        
+        self.data_output.flush()
 
 
 
 # MAIN
+
+logging.basicConfig(level = logging.DEBUG)
 
 parser = argparse.ArgumentParser(description = 'Write contour lines from a file or databse source ' + \
                                                'to an osm file')
@@ -318,13 +404,8 @@ if args.poly:
     #poly.set_boundaries(6.051, 6.1232, 50.4792, 50.5191)
 
 data_input = DataSource(args.datasource, args.layername, args.layerfeat, args.layergeom, args.srcsrs, poly)
-#if args.connectstring:
-#    data_input = DatabaseInput(args.connectstring, \
-#                               args.dbtable, args.dbheightcolumn, args.dbcontourcolumn, poly)
-#else:
-#    data_input = FileInput(args.sourcefile, args.srcsrs, poly)
-
-data_output = OsmOutput('test.osm')
+#data_output = OsmOutput('test.osm')
+data_output = MatplotOutput()
 
 transform = Transformation(data_input, data_output)
 transform.add_reprojection(args.srcsrs, args.dstsrs)
