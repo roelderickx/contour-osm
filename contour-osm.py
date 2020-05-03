@@ -84,6 +84,9 @@ class Polyfile:
             else:
                 ords = line.split()
                 poly_section.AddPoint(float(ords[0]), float(ords[1]))
+                # TODO: it appears as if longitude and latitude are switched in shapefiles
+                # why? and is this always the case?
+                #poly_section.AddPoint(float(ords[1]), float(ords[0]))
         
         return poly_section
 
@@ -127,6 +130,7 @@ class DataSource:
     def __init__(self, datasource, layername, preferred_feat, preferred_geom, srs, boundaries):
         self.datasource = ogr.Open(datasource, gdalconst.GA_ReadOnly)
         self.driver = self.datasource.GetDriver()
+        self.intersect_ds = None # intersection datasource, should not go out of scope
         self.layername = layername
         self.featname = None
         self.geomname = None
@@ -179,8 +183,6 @@ class DataSource:
     def __get_query(self):
         sql = ''
         
-        # TODO: it appears as if longitude and latitude are switched on the database
-        # why? and is this always the case?
         if self.boundaries:
             sql = '''select %s, ST_Intersection(%s, p.polyline)
 from (select ST_GeomFromText(\'%s\', 4326)  polyline) p, %s
@@ -198,13 +200,9 @@ where ST_Intersects(%s, p.polyline)''' % \
 
 
     def __calc_layer_intersection(self, layer, geometry):
-        #layer.SetSpatialFilter(geometry)
-        #return layer
-        
         dst_driver = ogr.GetDriverByName('MEMORY')
-        dst_datasource = dst_driver.CreateDataSource('memdata')
-        #tmp = dst_driver.Open('memdata', gdalconst.GA_Update)
-        dst_layer = dst_datasource.CreateLayer(layer.GetName(), geom_type = ogr.wkbMultiLineString)
+        self.intersect_ds = dst_driver.CreateDataSource('memdata')
+        dst_layer = self.intersect_ds.CreateLayer(layer.GetName(), geom_type = ogr.wkbMultiLineString)
         dst_layer_def = dst_layer.GetLayerDefn()
         
         # add input layer field definitions to the output layer
@@ -227,14 +225,9 @@ where ST_Intersects(%s, p.polyline)''' % \
                 for k in range(dst_layer_def.GetFieldCount()):
                     dst_field = dst_layer_def.GetFieldDefn(k)
                     dst_feature.SetField(dst_field.GetNameRef(), src_feature.GetField(k))
-                dst_feature.SetGeometry(geometry) #intersection)
+                dst_feature.SetGeometry(intersection)
 
                 dst_layer.CreateFeature(dst_feature)
-                dst_feature = None
-
-            src_feature = None
-
-        dst_datasource = None
         
         logging.info('Amount of features in source: %d' % layer.GetFeatureCount())
         logging.info('Amount of intersections found: %d' % amount_intersections)
@@ -315,8 +308,8 @@ class Transformation:
         if src_srs:
             spatial_ref = osr.SpatialReference()
             spatial_ref.ImportFromEPSG(src_srs)
-        else:
-            spatial_ref = layer.GetSpatialRef()
+        # TODO else:
+        #    spatial_ref = layer.GetSpatialRef()
 
         if spatial_ref:
             logging.info("Detected projection metadata:\n" + str(spatial_ref))
@@ -326,7 +319,6 @@ class Transformation:
                 dest_spatial_ref.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
             except AttributeError:
                 pass
-            # Destination projection will *always* be EPSG:4326, WGS84 lat-lon
             dest_spatial_ref.ImportFromEPSG(dst_srs)
             coordTrans = osr.CoordinateTransformation(spatial_ref, dest_spatial_ref)
             self.reproject = lambda geometry: geometry.Transform(coordTrans)
