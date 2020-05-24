@@ -84,10 +84,7 @@ class Polyfile:
             else:
                 ords = line.split()
                 poly_section.AddPoint(float(ords[0]), float(ords[1]))
-                # TODO: it appears as if longitude and latitude are switched in shapefiles
-                # why? and is this always the case?
-                #poly_section.AddPoint(float(ords[1]), float(ords[0]))
-        
+                
         return poly_section
 
 
@@ -136,7 +133,7 @@ class DataSource:
         self.geomname = None
         self.srs = srs
         self.boundaries = boundaries
-        
+
         self.__get_layer_features(preferred_feat, preferred_geom)
         
 
@@ -185,11 +182,11 @@ class DataSource:
         
         if self.boundaries:
             sql = '''select %s, ST_Intersection(%s, p.polyline)
-from (select ST_GeomFromText(\'%s\', 4326)  polyline) p, %s
+from (select ST_GeomFromText(\'%s\', %d)  polyline) p, %s
 where ST_Intersects(%s, p.polyline)''' % \
                 (self.featname, self.geomname, \
-                self.boundaries.to_wkt_string(), self.layername, \
-                self.geomname)
+                self.boundaries.to_wkt_string(), self.srs, \
+                self.layername, self.geomname)
         else:
             sql = 'select %s, %s from %s' % \
                 (self.featname, self.geomname, self.layername)
@@ -200,9 +197,14 @@ where ST_Intersects(%s, p.polyline)''' % \
 
 
     def __calc_layer_intersection(self, layer, geometry):
+        spatial_ref = osr.SpatialReference()
+        spatial_ref.ImportFromEPSG(self.srs)
+        
         dst_driver = ogr.GetDriverByName('MEMORY')
         self.intersect_ds = dst_driver.CreateDataSource('memdata')
-        dst_layer = self.intersect_ds.CreateLayer(layer.GetName(), geom_type = ogr.wkbMultiLineString)
+        dst_layer = self.intersect_ds.CreateLayer(layer.GetName(), \
+                                                  srs = spatial_ref, \
+                                                  geom_type = ogr.wkbMultiLineString)
         dst_layer_def = dst_layer.GetLayerDefn()
         
         # add input layer field definitions to the output layer
@@ -216,8 +218,8 @@ where ST_Intersects(%s, p.polyline)''' % \
         for j in range(layer.GetFeatureCount()):
             src_feature = layer.GetNextFeature()
             src_geometry = src_feature.GetGeometryRef()
-
-            if src_geometry.Intersects(geometry):
+            
+            if geometry.Intersects(src_geometry):
                 amount_intersections += 1
                 intersection = geometry.Intersection(src_geometry)
                 
@@ -236,6 +238,17 @@ where ST_Intersects(%s, p.polyline)''' % \
     
     
     def fetch_data(self):
+        if self.boundaries:
+            bound_spatial_ref = osr.SpatialReference()
+            bound_spatial_ref.ImportFromEPSG(4326)
+            spatial_ref = osr.SpatialReference()
+            spatial_ref.ImportFromEPSG(self.srs)
+            spatial_ref.AutoIdentifyEPSG()
+            bound_coord_trans = osr.CoordinateTransformation(bound_spatial_ref, spatial_ref)
+            if spatial_ref.EPSGTreatsAsLatLong() == 0:
+                self.boundaries.polygons.SwapXY()
+            self.boundaries.polygons.Transform(bound_coord_trans)
+        
         layer = None
         if self.driver.GetName() == 'PostgreSQL':
             layer = self.datasource.ExecuteSQL(self.__get_query())
@@ -243,9 +256,7 @@ where ST_Intersects(%s, p.polyline)''' % \
             src_layer = self.datasource.GetLayer(self.layername)
             
             if self.boundaries:
-                wkt = self.boundaries.to_wkt_string(self.srs)
-                geometry = ogr.CreateGeometryFromWkt(wkt)
-                layer = self.__calc_layer_intersection(src_layer, geometry)
+                layer = self.__calc_layer_intersection(src_layer, self.boundaries.polygons)
             else:
                 layer = src_layer
 
@@ -290,7 +301,6 @@ class OsmOutput:
 
 
 
-# TODO class O5mOutput:
 # TODO class PbfOutput:
 
 
@@ -300,36 +310,24 @@ class Transformation:
         self.data_input = data_input
         self.data_output = data_output
         
-        self.reproject = None
+        self.reproject = lambda geometry: None
 
 
     def add_reprojection(self, src_srs, dst_srs):
-        spatial_ref = None
-        if src_srs:
-            spatial_ref = osr.SpatialReference()
-            spatial_ref.ImportFromEPSG(src_srs)
-        # TODO else:
-        #    spatial_ref = layer.GetSpatialRef()
+        spatial_ref = osr.SpatialReference()
+        spatial_ref.ImportFromEPSG(src_srs)
 
-        if spatial_ref:
-            logging.info("Detected projection metadata:\n" + str(spatial_ref))
-            
-            dest_spatial_ref = osr.SpatialReference()
-            try:
-                dest_spatial_ref.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
-            except AttributeError:
-                pass
-            dest_spatial_ref.ImportFromEPSG(dst_srs)
-            coordTrans = osr.CoordinateTransformation(spatial_ref, dest_spatial_ref)
-            self.reproject = lambda geometry: geometry.Transform(coordTrans)
+        dest_spatial_ref = osr.SpatialReference()
+        try:
+            dest_spatial_ref.SetAxisMappingStrategy(osr.OAMS_AUTHORITY_COMPLIANT)
+        except AttributeError:
+            pass
+        dest_spatial_ref.ImportFromEPSG(dst_srs)
+        coordTrans = osr.CoordinateTransformation(spatial_ref, dest_spatial_ref)
+        if spatial_ref.EPSGTreatsAsLatLong() != dest_spatial_ref.EPSGTreatsAsLatLong():
+            self.reproject = lambda geometry: (geometry.Transform(coordTrans), geometry.SwapXY())
         else:
-            logging.info("No projection metadata, falling back to EPSG:4326")
-            
-            # No source proj specified yet? Then default to do no reprojection.
-            # Some python magic: skip reprojection altogether by using a dummy
-            # lamdba funcion. Otherwise, the lambda will be a call to the OGR
-            # reprojection stuff.
-            self.reproject = lambda geometry: None
+            self.reproject = lambda geometry: geometry.Transform(coordTrans)
 
 
     # TODO Ramer-Douglas-Peucker (RDP) simplification
@@ -342,7 +340,7 @@ class Transformation:
         if not ogrfeature:
             return
         
-        ogrgeometry = ogrfeature.GetGeometryRef()
+        ogrgeometry = ogrfeature.GetGeometryRef() # TODO: directly?
         
         if not ogrgeometry:
             return
