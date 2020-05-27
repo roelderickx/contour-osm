@@ -24,13 +24,13 @@ from osgeo import osr
 
 class Polyfile:
     def __init__(self):
-        self.filename = None
-        self.name = None
-        self.polygons = ogr.Geometry(ogr.wkbMultiPolygon)
+        self.__filename = None
+        self.__name = None
+        self.__polygons = ogr.Geometry(ogr.wkbMultiPolygon)
     
     
     def set_boundaries(self, minlon, maxlon, minlat, maxlat):
-        self.name = 'bbox'
+        self.__name = 'bbox'
         polygon = ogr.Geometry(ogr.wkbPolygon)
         poly_section = ogr.Geometry(ogr.wkbLinearRing)
         poly_section.AddPoint(minlon, minlat)
@@ -39,19 +39,19 @@ class Polyfile:
         poly_section.AddPoint(minlon, maxlat)
         poly_section.AddPoint(minlon, minlat)
         polygon.AddGeometry(poly_section)
-        self.polygons.AddGeometry(polygon)
+        self.__polygons.AddGeometry(polygon)
     
     
     def read_file(self, filename):
-        self.filename = filename
-        self.polygons = ogr.Geometry(ogr.wkbMultiPolygon)
+        self.__filename = filename
+        self.__polygons = ogr.Geometry(ogr.wkbMultiPolygon)
         
         self.__read_poly()
     
     
     def __read_poly(self):
-        with open(self.filename, 'r') as f:
-            self.name = f.readline().strip()
+        with open(self.__filename, 'r') as f:
+            self.__name = f.readline().strip()
             polygon = None
             while True:
                 section_name = f.readline()
@@ -67,7 +67,7 @@ class Polyfile:
                 else:
                     polygon = ogr.Geometry(ogr.wkbPolygon)
                     polygon.AddGeometry(self.__read_poly_section(f))
-                    self.polygons.AddGeometry(polygon)
+                    self.__polygons.AddGeometry(polygon)
         f.close()
     
     
@@ -83,44 +83,38 @@ class Polyfile:
                 continue
             else:
                 ords = line.split()
-                poly_section.AddPoint(float(ords[0]), float(ords[1]))
+                # orientation of EPSG:4326 is North,East or latitude,longitude,
+                # while orientation of coordinate in polyfile is longitude,latitude
+                poly_section.AddPoint(float(ords[1]), float(ords[0]))
                 
         return poly_section
 
 
-    def to_wkt_string(self, srs = 4326):
-        if srs != 4326:
-            src_srs = osr.SpatialReference()
-            src_srs.ImportFromEPSG(4326)
+    def get_geometry(self, srs = 4326):
+        # TODO: use self.__polygons.Clone() ?
+        polygons = ogr.CreateGeometryFromWkt(self.__polygons.ExportToWkt())
+        
+        src_srs = osr.SpatialReference()
+        src_srs.ImportFromEPSG(4326)
 
-            dest_srs = osr.SpatialReference()
-            dest_srs.ImportFromEPSG(srs)
+        dest_srs = osr.SpatialReference()
+        dest_srs.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
+        dest_srs.ImportFromEPSG(srs)
 
-            transform = osr.CoordinateTransformation(src_srs, dest_srs)
-            polygons = ogr.CreateGeometryFromWkt(self.polygons.ExportToWkt())
-            polygons.Transform(transform)
+        transform = osr.CoordinateTransformation(src_srs, dest_srs)
+        polygons.Transform(transform)
+        
+        return polygons
+    
+    '''
+    def to_wkt_string(self, srs = 4326, force_eastnorth_orientation = False):
+        return self.get_geometry(srs, force_eastnorth_orientation).ExportToWkt()
 
-            return polygons.ExportToWkt()
-        else:
-            return self.polygons.ExportToWkt()
 
-
-    def to_wkb_string(self, srs = 4326):
-        if srs != 4326:
-            src_srs = osr.SpatialReference()
-            src_srs.ImportFromEPSG(4326)
-
-            dest_srs = osr.SpatialReference()
-            dest_srs.ImportFromEPSG(srs)
-
-            transform = osr.CoordinateTransformation(src_srs, dest_srs)
-            polygons = ogr.CreateGeometryFromWkt(self.polygons.ExportToWkt())
-            polygons.Transform(transform)
-
-            return ''.join(format(x, '02x') for x in polygons.ExportToWkb())
-        else:
-            return ''.join(format(x, '02x') for x in self.polygons.ExportToWkb())
-
+    def to_wkb_string(self, srs = 4326, force_eastnorth_orientation = False):
+        polygons = self.get_geometry(srs, force_eastnorth_orientation)
+        return ''.join(format(x, '02x') for x in polygons.ExportToWkb())
+    '''
 
 
 class DataSource:
@@ -181,11 +175,14 @@ class DataSource:
         sql = ''
         
         if self.boundaries:
+            # Postgis always uses east,north orientation, no matter the definition of the
+            # projection. Boundaries are converted to source SRS and orientation is forced to 
+            # east,north
             sql = '''select %s, ST_Intersection(%s, p.polyline)
 from (select ST_GeomFromText(\'%s\', %d)  polyline) p, %s
 where ST_Intersects(%s, p.polyline)''' % \
                 (self.featname, self.geomname, \
-                self.boundaries.to_wkt_string(), self.srs, \
+                self.boundaries.get_geometry(self.srs).ExportToWkt(), self.srs, \
                 self.layername, self.geomname)
         else:
             sql = 'select %s, %s from %s' % \
@@ -198,6 +195,7 @@ where ST_Intersects(%s, p.polyline)''' % \
 
     def __calc_layer_intersection(self, layer, geometry):
         spatial_ref = osr.SpatialReference()
+        spatial_ref.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
         spatial_ref.ImportFromEPSG(self.srs)
         
         dst_driver = ogr.GetDriverByName('MEMORY')
@@ -238,17 +236,6 @@ where ST_Intersects(%s, p.polyline)''' % \
     
     
     def fetch_data(self):
-        if self.boundaries:
-            bound_spatial_ref = osr.SpatialReference()
-            bound_spatial_ref.ImportFromEPSG(4326)
-            spatial_ref = osr.SpatialReference()
-            spatial_ref.ImportFromEPSG(self.srs)
-            spatial_ref.AutoIdentifyEPSG()
-            bound_coord_trans = osr.CoordinateTransformation(bound_spatial_ref, spatial_ref)
-            if spatial_ref.EPSGTreatsAsLatLong() == 0:
-                self.boundaries.polygons.SwapXY()
-            self.boundaries.polygons.Transform(bound_coord_trans)
-        
         layer = None
         if self.driver.GetName() == 'PostgreSQL':
             layer = self.datasource.ExecuteSQL(self.__get_query())
@@ -256,7 +243,8 @@ where ST_Intersects(%s, p.polyline)''' % \
             src_layer = self.datasource.GetLayer(self.layername)
             
             if self.boundaries:
-                layer = self.__calc_layer_intersection(src_layer, self.boundaries.polygons)
+                bounds = self.boundaries.get_geometry(self.srs)
+                layer = self.__calc_layer_intersection(src_layer, bounds)
             else:
                 layer = src_layer
 
@@ -310,24 +298,11 @@ class Transformation:
         self.data_input = data_input
         self.data_output = data_output
         
-        self.reproject = lambda geometry: None
+        self.dest_srs = None
 
 
-    def add_reprojection(self, src_srs, dst_srs):
-        spatial_ref = osr.SpatialReference()
-        spatial_ref.ImportFromEPSG(src_srs)
-
-        dest_spatial_ref = osr.SpatialReference()
-        try:
-            dest_spatial_ref.SetAxisMappingStrategy(osr.OAMS_AUTHORITY_COMPLIANT)
-        except AttributeError:
-            pass
-        dest_spatial_ref.ImportFromEPSG(dst_srs)
-        coordTrans = osr.CoordinateTransformation(spatial_ref, dest_spatial_ref)
-        if spatial_ref.EPSGTreatsAsLatLong() != dest_spatial_ref.EPSGTreatsAsLatLong():
-            self.reproject = lambda geometry: (geometry.Transform(coordTrans), geometry.SwapXY())
-        else:
-            self.reproject = lambda geometry: geometry.Transform(coordTrans)
+    def add_reprojection(self, dest_srs):
+        self.dest_srs = dest_srs
 
 
     # TODO Ramer-Douglas-Peucker (RDP) simplification
@@ -340,7 +315,7 @@ class Transformation:
         if not ogrfeature:
             return
         
-        ogrgeometry = ogrfeature.GetGeometryRef() # TODO: directly?
+        ogrgeometry = ogrfeature.GetGeometryRef()
         
         if not ogrgeometry:
             return
@@ -355,6 +330,14 @@ class Transformation:
     
     def process(self):
         layer = self.data_input.fetch_data()
+        
+        # set reprojection function
+        if self.dest_srs != None:
+            dest_spatial_ref = osr.SpatialReference()
+            dest_spatial_ref.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
+            dest_spatial_ref.ImportFromEPSG(self.dest_srs)
+            coord_transform = osr.CoordinateTransformation(layer.GetSpatialRef(), dest_spatial_ref)
+            self.reproject = lambda geometry: geometry.Transform(coord_transform)
 
         # loop through layer features
         for j in range(layer.GetFeatureCount()):
@@ -398,7 +381,7 @@ data_input = DataSource(args.datasource, args.layername, args.layerfeat, args.la
 data_output = MatplotOutput()
 
 transform = Transformation(data_input, data_output)
-transform.add_reprojection(args.srcsrs, args.dstsrs)
+transform.add_reprojection(args.dstsrs)
 #transform.add_simplify_rdp(epsilon, max_distance)
 transform.process()
 
