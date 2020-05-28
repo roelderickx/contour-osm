@@ -21,6 +21,7 @@ import matplotlib.pyplot as pyplot
 from osgeo import gdalconst
 from osgeo import ogr
 from osgeo import osr
+from xml.dom import minidom
 
 class Polyfile:
     def __init__(self):
@@ -33,6 +34,7 @@ class Polyfile:
         self.__name = 'bbox'
         polygon = ogr.Geometry(ogr.wkbPolygon)
         poly_section = ogr.Geometry(ogr.wkbLinearRing)
+        # add points in traditional GIS order (east, north)
         poly_section.AddPoint(minlon, minlat)
         poly_section.AddPoint(maxlon, minlat)
         poly_section.AddPoint(maxlon, maxlat)
@@ -83,25 +85,24 @@ class Polyfile:
                 continue
             else:
                 ords = line.split()
-                # orientation of EPSG:4326 is North,East or latitude,longitude,
-                # while orientation of coordinate in polyfile is longitude,latitude
-                poly_section.AddPoint(float(ords[1]), float(ords[0]))
+                # add point in traditional GIS order (east, north)
+                poly_section.AddPoint(float(ords[0]), float(ords[1]))
                 
         return poly_section
 
 
     def get_geometry(self, srs = 4326):
-        # TODO: use self.__polygons.Clone() ?
-        polygons = ogr.CreateGeometryFromWkt(self.__polygons.ExportToWkt())
+        polygons = self.__polygons.Clone()
         
-        src_srs = osr.SpatialReference()
-        src_srs.ImportFromEPSG(4326)
+        src_spatial_ref = osr.SpatialReference()
+        src_spatial_ref.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
+        src_spatial_ref.ImportFromEPSG(4326)
 
-        dest_srs = osr.SpatialReference()
-        dest_srs.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
-        dest_srs.ImportFromEPSG(srs)
+        dest_spatial_ref = osr.SpatialReference()
+        dest_spatial_ref.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
+        dest_spatial_ref.ImportFromEPSG(srs)
 
-        transform = osr.CoordinateTransformation(src_srs, dest_srs)
+        transform = osr.CoordinateTransformation(src_spatial_ref, dest_spatial_ref)
         polygons.Transform(transform)
         
         return polygons
@@ -118,14 +119,16 @@ class Polyfile:
 
 
 class DataSource:
-    def __init__(self, datasource, layername, preferred_feat, preferred_geom, srs, boundaries):
+    def __init__(self, datasource, layername, preferred_feat, preferred_geom, boundaries, \
+                 src_srs, dest_srs):
         self.datasource = ogr.Open(datasource, gdalconst.GA_ReadOnly)
         self.driver = self.datasource.GetDriver()
         self.intersect_ds = None # intersection datasource, should not go out of scope
         self.layername = layername
         self.featname = None
         self.geomname = None
-        self.srs = srs
+        self.src_srs = src_srs
+        self.dest_srs = dest_srs
         self.boundaries = boundaries
 
         self.__get_layer_features(preferred_feat, preferred_geom)
@@ -175,14 +178,11 @@ class DataSource:
         sql = ''
         
         if self.boundaries:
-            # Postgis always uses east,north orientation, no matter the definition of the
-            # projection. Boundaries are converted to source SRS and orientation is forced to 
-            # east,north
             sql = '''select %s, ST_Intersection(%s, p.polyline)
 from (select ST_GeomFromText(\'%s\', %d)  polyline) p, %s
 where ST_Intersects(%s, p.polyline)''' % \
                 (self.featname, self.geomname, \
-                self.boundaries.get_geometry(self.srs).ExportToWkt(), self.srs, \
+                self.boundaries.get_geometry(self.src_srs).ExportToWkt(), self.src_srs, \
                 self.layername, self.geomname)
         else:
             sql = 'select %s, %s from %s' % \
@@ -196,7 +196,7 @@ where ST_Intersects(%s, p.polyline)''' % \
     def __calc_layer_intersection(self, layer, geometry):
         spatial_ref = osr.SpatialReference()
         spatial_ref.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
-        spatial_ref.ImportFromEPSG(self.srs)
+        spatial_ref.ImportFromEPSG(self.src_srs)
         
         dst_driver = ogr.GetDriverByName('MEMORY')
         self.intersect_ds = dst_driver.CreateDataSource('memdata')
@@ -235,7 +235,7 @@ where ST_Intersects(%s, p.polyline)''' % \
         return dst_layer
     
     
-    def fetch_data(self):
+    def __fetch_data(self):
         layer = None
         if self.driver.GetName() == 'PostgreSQL':
             layer = self.datasource.ExecuteSQL(self.__get_query())
@@ -243,14 +243,40 @@ where ST_Intersects(%s, p.polyline)''' % \
             src_layer = self.datasource.GetLayer(self.layername)
             
             if self.boundaries:
-                bounds = self.boundaries.get_geometry(self.srs)
+                bounds = self.boundaries.get_geometry(self.src_srs)
                 layer = self.__calc_layer_intersection(src_layer, bounds)
             else:
                 layer = src_layer
 
         layer.ResetReading()
-        
+
         return layer
+    
+    
+    # datawriter should be a class with two public member functions:
+    # - add_geometry(height, geometry)
+    # - flush()
+    def process_data(self, datawriter):
+        layer = self.__fetch_data()
+        
+        src_spatial_ref = layer.GetSpatialRef()
+        dest_spatial_ref = osr.SpatialReference()
+        dest_spatial_ref.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
+        dest_spatial_ref.ImportFromEPSG(self.dest_srs)
+        coord_transform = osr.CoordinateTransformation(src_spatial_ref, dest_spatial_ref)
+        
+        for j in range(layer.GetFeatureCount()):
+            ogrfeature = layer.GetNextFeature()
+            
+            if ogrfeature:
+                height = ogrfeature[self.featname]
+                ogrgeometry = ogrfeature.GetGeometryRef()
+                
+                if ogrgeometry and ogrgeometry.GetPointCount() > 0:
+                    ogrgeometry.Transform(coord_transform)
+                    datawriter.add_geometry(height, ogrgeometry)
+        
+        datawriter.flush()
 
 
 
@@ -263,8 +289,8 @@ class MatplotOutput:
         x = []
         y = []
         for i in range(geometry.GetPointCount()):
-             x.append(geometry.GetX(i))
-             y.append(geometry.GetY(i))
+            x.append(geometry.GetX(i))
+            y.append(geometry.GetY(i))
         pyplot.plot(x, y)
 
 
@@ -276,16 +302,77 @@ class MatplotOutput:
 # class outline, not yet functional
 class OsmOutput:
     def __init__(self, filename):
-        self.filename = filename
+        self.__filename = filename
+        self.__current_id = 0
+        
+        self.__osmdoc = minidom.Document()
+        self.__osmnode = self.__osmdoc.createElement('osm')
+        self.__osmnode.setAttribute("version", "0.6")
+        self.__osmnode.setAttribute("generator", "contour-osm")
+        self.__osmnode.setAttribute("upload", "false")
+        self.__waynodes = []
+    
+    
+    def __classify(self, height):
+        if height % 100 == 0: # height % majorDivisor
+            return "elevation_major"
+        elif height % 20 == 0: # height % mediumDivisor
+            return "elevation_medium"
+        else:
+            return "elevation_minor"
+
+
+    def __add_node_nodes(self, geometry):
+        for i in range(geometry.GetPointCount()):
+            self.__current_id = self.__current_id - 1
+            nodenode = self.__osmdoc.createElement('node')
+            nodenode.setAttribute("visible", "true")
+            nodenode.setAttribute("id", str(self.__current_id))
+            nodenode.setAttribute("lat", "%f" % geometry.GetY(i))
+            nodenode.setAttribute("lon", "%f" % geometry.GetX(i))
+            self.__osmnode.appendChild(nodenode)
+    
+    
+    def __add_way_tag_node(self, waynode, key, value):
+        waytagnode = self.__osmdoc.createElement('tag')
+        waytagnode.setAttribute("k", key)
+        waytagnode.setAttribute("v", value)
+        waynode.appendChild(waytagnode)
+    
+    
+    def __create_way_node(self, way_id, first_node_id, last_node_id, height):
+        waynode = self.__osmdoc.createElement('way')
+        waynode.setAttribute("visible", "true")
+        waynode.setAttribute("id", str(way_id))
+        
+        for i in range(way_id - 1, self.__current_id - 1, -1):
+            waynodenode = self.__osmdoc.createElement('nd')
+            waynodenode.setAttribute("ref", str(i))
+            waynode.appendChild(waynodenode)
+        
+        self.__add_way_tag_node(waynode, "ele", "%d" % int(height))
+        self.__add_way_tag_node(waynode, "contour", "elevation")
+        self.__add_way_tag_node(waynode, "contour_ext", self.__classify(height))
+        
+        return waynode
     
     
     def add_geometry(self, height, geometry):
-        print(height)
-        print(geometry)
+        self.__current_id = self.__current_id - 1
+        way_id = self.__current_id
+        
+        self.__add_node_nodes(geometry)
+        self.__waynodes.append(self.__create_way_node(way_id, way_id - 1, self.__current_id, height))
     
     
     def flush(self):
-        pass
+        for waynode in self.__waynodes:
+            self.__osmnode.appendChild(waynode)
+        self.__osmdoc.appendChild(self.__osmnode)
+        
+        f = open(self.__filename, 'w')
+        self.__osmdoc.writexml(f, "", "", "\n")
+        f.close()
 
 
 
@@ -293,66 +380,11 @@ class OsmOutput:
 
 
 
-class Transformation:
-    def __init__(self, data_input, data_output):
-        self.data_input = data_input
-        self.data_output = data_output
-        
-        self.dest_srs = None
-
-
-    def add_reprojection(self, dest_srs):
-        self.dest_srs = dest_srs
-
-
-    # TODO Ramer-Douglas-Peucker (RDP) simplification
-    #      see phyghtmap
-    def add_simplify_rdp(self, epsilon, max_distance):
-        pass
-    
-    
-    def __process_feature(self, height, ogrfeature):
-        if not ogrfeature:
-            return
-        
-        ogrgeometry = ogrfeature.GetGeometryRef()
-        
-        if not ogrgeometry:
-            return
-
-        if self.reproject:
-            self.reproject(ogrgeometry)
-        #elif self.simplify:
-        #    self.simplify(ogrgeometry)
-
-        self.data_output.add_geometry(height, ogrgeometry)
-    
-    
-    def process(self):
-        layer = self.data_input.fetch_data()
-        
-        # set reprojection function
-        if self.dest_srs != None:
-            dest_spatial_ref = osr.SpatialReference()
-            dest_spatial_ref.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
-            dest_spatial_ref.ImportFromEPSG(self.dest_srs)
-            coord_transform = osr.CoordinateTransformation(layer.GetSpatialRef(), dest_spatial_ref)
-            self.reproject = lambda geometry: geometry.Transform(coord_transform)
-
-        # loop through layer features
-        for j in range(layer.GetFeatureCount()):
-            ogrfeature = layer.GetNextFeature()
-            self.__process_feature(ogrfeature[self.data_input.featname], ogrfeature)
-        
-        self.data_output.flush()
-
-
-
 # MAIN
 
 logging.basicConfig(level = logging.DEBUG)
 
-parser = argparse.ArgumentParser(description = 'Write contour lines from a file or databse source ' + \
+parser = argparse.ArgumentParser(description = 'Write contour lines from a file or database source ' + \
                                                'to an osm file')
 parser.add_argument('--datasource', dest = 'datasource', help = 'Database connectstring or filename')
 parser.add_argument('--layername', dest = 'layername', \
@@ -376,12 +408,10 @@ if args.poly:
     poly.read_file(args.poly)
     #poly.set_boundaries(6.051, 6.1232, 50.4792, 50.5191)
 
-data_input = DataSource(args.datasource, args.layername, args.layerfeat, args.layergeom, args.srcsrs, poly)
-#data_output = OsmOutput('test.osm')
-data_output = MatplotOutput()
+data_input = DataSource(args.datasource, args.layername, args.layerfeat, args.layergeom, poly, \
+                        args.srcsrs, args.dstsrs)
+data_output = OsmOutput('test.osm')
+#data_output = MatplotOutput()
 
-transform = Transformation(data_input, data_output)
-transform.add_reprojection(args.dstsrs)
-#transform.add_simplify_rdp(epsilon, max_distance)
-transform.process()
+data_input.process_data(data_output)
 
