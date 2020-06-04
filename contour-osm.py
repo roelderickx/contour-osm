@@ -16,12 +16,11 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-import sys, os, argparse, logging
-import matplotlib.pyplot as pyplot
+import sys, os, argparse, logging, ogr2pbf
+from xml.dom import minidom
 from osgeo import gdalconst
 from osgeo import ogr
 from osgeo import osr
-from xml.dom import minidom
 
 class Polyfile:
     def __init__(self):
@@ -118,82 +117,22 @@ class Polyfile:
     '''
 
 
-class DataSource:
-    def __init__(self, datasource, layername, preferred_feat, preferred_geom, boundaries, \
-                 src_srs, dest_srs):
-        self.datasource = ogr.Open(datasource, gdalconst.GA_ReadOnly)
-        self.driver = self.datasource.GetDriver()
-        self.intersect_ds = None # intersection datasource, should not go out of scope
-        self.layername = layername
-        self.featname = None
-        self.geomname = None
+
+class ContourTranslation(ogr2pbf.TranslationBase):
+    def __init__(self, is_database_source, src_srs, poly):
+        self.is_database_source = is_database_source
         self.src_srs = src_srs
-        self.dest_srs = dest_srs
-        self.boundaries = boundaries
-
-        self.__get_layer_features(preferred_feat, preferred_geom)
+        self.boundaries = None
+        if poly:
+            self.boundaries = poly.get_geometry(src_srs)
         
-
-    def __get_layer_features(self, preferred_feat, preferred_geom):
-        layer = None
-        if not self.layername:
-            if self.datasource.GetLayerCount() > 0:
-                layer = self.datasource.GetLayer(0)
-                self.layername = layer.GetName()
-            else:
-                logging.error("No layer found and none was given.")
-        else:
-            layer = self.datasource.GetLayer(self.layername)
-        logging.info("Using layer %s" % self.layername)
-
-        layerdef = layer.GetLayerDefn()
-        
-        features_without_id = \
-            [ layerdef.GetFieldDefn(i).GetName() \
-                    for i in range(layerdef.GetFieldCount()) \
-                    if layerdef.GetFieldDefn(i).GetName().lower() != 'id' ]
-
-        if preferred_feat and preferred_feat in features_without_id:
-            self.featname = preferred_feat
-        elif len(features_without_id) == 0:
-            logging.error("No feature found and none was given.")
-        else:
-            self.featname = features_without_id[0]
-            if len(features_without_id) > 1:
-                logging.warning("More than one feature found, using %s" % self.featname)
-        
-        geoms = [ layerdef.GetGeomFieldDefn(i).GetName() \
-                        for i in range(layerdef.GetGeomFieldCount()) ]
-        if preferred_geom and preferred_geom in geoms:
-            self.geomname = preferred_geom
-        elif len(geoms) == 0:
-            logging.error("No geometry found and none was given.")
-        else:
-            self.geomname = geoms[0]
-            if len(geoms) > 1:
-                logging.warning("More than one geometry found, using %s" % self.geomname)
+        self.intersect_ds = None
     
     
-    def __get_query(self):
-        sql = ''
+    def filter_layer(self, layer):
+        if self.is_database_source or not self.boundaries:
+            return layer
         
-        if self.boundaries:
-            sql = '''select %s, ST_Intersection(%s, p.polyline)
-from (select ST_GeomFromText(\'%s\', %d)  polyline) p, %s
-where ST_Intersects(%s, p.polyline)''' % \
-                (self.featname, self.geomname, \
-                self.boundaries.get_geometry(self.src_srs).ExportToWkt(), self.src_srs, \
-                self.layername, self.geomname)
-        else:
-            sql = 'select %s, %s from %s' % \
-                (self.featname, self.geomname, self.layername)
-
-        logging.info('Generated SQL statement: %s' % sql)
-        
-        return sql
-
-
-    def __calc_layer_intersection(self, layer, geometry):
         spatial_ref = osr.SpatialReference()
         spatial_ref.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
         spatial_ref.ImportFromEPSG(self.src_srs)
@@ -217,9 +156,9 @@ where ST_Intersects(%s, p.polyline)''' % \
             src_feature = layer.GetNextFeature()
             src_geometry = src_feature.GetGeometryRef()
             
-            if geometry.Intersects(src_geometry):
+            if self.boundaries.Intersects(src_geometry):
                 amount_intersections += 1
-                intersection = geometry.Intersection(src_geometry)
+                intersection = self.boundaries.Intersection(src_geometry)
                 
                 dst_feature = ogr.Feature(dst_layer_def)
                 for k in range(dst_layer_def.GetFieldCount()):
@@ -235,169 +174,113 @@ where ST_Intersects(%s, p.polyline)''' % \
         return dst_layer
     
     
-    def __fetch_data(self):
-        layer = None
-        if self.driver.GetName() == 'PostgreSQL':
-            layer = self.datasource.ExecuteSQL(self.__get_query())
-        else:
-            src_layer = self.datasource.GetLayer(self.layername)
+    def filter_tags(self, attrs):
+        if not attrs:
+            return
+        
+        tags={}
+        
+        if 'height' in attrs:
+            tags['ele'] = attrs['height']
+            tags['contour'] = 'elevation'
             
-            if self.boundaries:
-                bounds = self.boundaries.get_geometry(self.src_srs)
-                layer = self.__calc_layer_intersection(src_layer, bounds)
+            height = int(float(attrs['height']))
+            if height % 500 == 0:
+                tags['contour_ext'] = 'elevation_major'
+            elif height % 100 == 0:
+                tags['contour_ext'] = 'elevation_medium'
             else:
-                layer = src_layer
-
-        layer.ResetReading()
-
-        return layer
-    
-    
-    # datawriter should be a class with two public member functions:
-    # - add_geometry(height, geometry)
-    # - flush()
-    def process_data(self, datawriter):
-        layer = self.__fetch_data()
+                tags['contour_ext'] = 'elevation_minor'
         
-        src_spatial_ref = layer.GetSpatialRef()
-        dest_spatial_ref = osr.SpatialReference()
-        dest_spatial_ref.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
-        dest_spatial_ref.ImportFromEPSG(self.dest_srs)
-        coord_transform = osr.CoordinateTransformation(src_spatial_ref, dest_spatial_ref)
-        
-        for j in range(layer.GetFeatureCount()):
-            ogrfeature = layer.GetNextFeature()
-            
-            if ogrfeature:
-                height = ogrfeature[self.featname]
-                ogrgeometry = ogrfeature.GetGeometryRef()
-                
-                if ogrgeometry and ogrgeometry.GetPointCount() > 0:
-                    ogrgeometry.Transform(coord_transform)
-                    datawriter.add_geometry(height, ogrgeometry)
-        
-        datawriter.flush()
+        return tags
 
 
+# TODO auto-detect layer properties
+'''
+def __get_layer_features(self, layer, preferred_feat, preferred_geom):
+    logging.info("Get layer features")
+    #layer = None
+    #if not self.layername:
+    #    if self.datasource.GetLayerCount() > 0:
+    #        layer = self.datasource.getLayer(0)
+    #        self.layername = layer.GetName()
+    #        
+    #        if self.datasource.GetLayerCount() > 1:
+    #            logging.warning("More than one layer found.")
+    #    else:
+    #        logging.error("No layer found and none was given.")
+    #else:
+    #    layer = self.datasource.GetLayer(self.layername)
+    if not self.layername:
+        self.layername = layer.GetName()
+    logging.info("Using layer %s" % self.layername)
 
-class MatplotOutput:
-    def __init__(self):
-        pyplot.title('Contours data plot')
+    layerdef = layer.GetLayerDefn()
     
+    features_without_id = \
+        [ layerdef.GetFieldDefn(i).GetName() \
+                for i in range(layerdef.GetFieldCount()) \
+                if layerdef.GetFieldDefn(i).GetName().lower() != 'id' ]
+
+    if preferred_feat and preferred_feat in features_without_id:
+        self.featname = preferred_feat
+    elif len(features_without_id) == 0:
+        logging.error("No feature found and none was given.")
+    else:
+        self.featname = features_without_id[0]
+        if len(features_without_id) > 1:
+            logging.warning("More than one feature found.")
+    logging.info("Using feature %s" % self.featname)
     
-    def add_geometry(self, height, geometry):
-        x = []
-        y = []
-        for i in range(geometry.GetPointCount()):
-            x.append(geometry.GetX(i))
-            y.append(geometry.GetY(i))
-        pyplot.plot(x, y)
+    geoms = [ layerdef.GetGeomFieldDefn(i).GetName() \
+                    for i in range(layerdef.GetGeomFieldCount()) ]
+    if preferred_geom and preferred_geom in geoms:
+        self.geomname = preferred_geom
+    elif len(geoms) == 0:
+        logging.error("No geometry found and none was given.")
+    else:
+        self.geomname = geoms[0]
+        if len(geoms) > 1:
+            logging.warning("More than one geometry found.")
+    logging.info("Using geometry %s" % self.geomname)
+'''
 
 
-    def flush(self):
-        pyplot.show() 
+def get_query(height_column, geom_column, tablename, boundaries, src_srs):
+    sql = ''
+    
+    if boundaries:
+        sql = '''select %s, ST_Intersection(%s, p.polyline)
+from (select ST_GeomFromText(\'%s\', %d)  polyline) p, %s
+where ST_Intersects(%s, p.polyline)''' % \
+            (height_column, geom_column, \
+            boundaries.get_geometry(src_srs).ExportToWkt(), src_srs, \
+            tablename, geom_column)
+    else:
+        sql = 'select %s, %s from %s' % \
+            (height_column, geom_column, tablename)
 
-
-
-# class outline, not yet functional
-class OsmOutput:
-    def __init__(self, filename):
-        self.__filename = filename
-        self.__current_id = 0
-        
-        self.__osmdoc = minidom.Document()
-        self.__osmnode = self.__osmdoc.createElement('osm')
-        self.__osmnode.setAttribute("version", "0.6")
-        self.__osmnode.setAttribute("generator", "contour-osm")
-        self.__osmnode.setAttribute("upload", "false")
-        self.__waynodes = []
+    logging.info('Generated SQL statement: %s' % sql)
     
-    
-    def __classify(self, height):
-        if height % 100 == 0: # height % majorDivisor
-            return "elevation_major"
-        elif height % 20 == 0: # height % mediumDivisor
-            return "elevation_medium"
-        else:
-            return "elevation_minor"
-
-
-    def __add_node_nodes(self, geometry):
-        for i in range(geometry.GetPointCount()):
-            self.__current_id = self.__current_id - 1
-            nodenode = self.__osmdoc.createElement('node')
-            nodenode.setAttribute("visible", "true")
-            nodenode.setAttribute("id", str(self.__current_id))
-            nodenode.setAttribute("lat", "%f" % geometry.GetY(i))
-            nodenode.setAttribute("lon", "%f" % geometry.GetX(i))
-            self.__osmnode.appendChild(nodenode)
-    
-    
-    def __add_way_tag_node(self, waynode, key, value):
-        waytagnode = self.__osmdoc.createElement('tag')
-        waytagnode.setAttribute("k", key)
-        waytagnode.setAttribute("v", value)
-        waynode.appendChild(waytagnode)
-    
-    
-    def __create_way_node(self, way_id, first_node_id, last_node_id, height):
-        waynode = self.__osmdoc.createElement('way')
-        waynode.setAttribute("visible", "true")
-        waynode.setAttribute("id", str(way_id))
-        
-        for i in range(way_id - 1, self.__current_id - 1, -1):
-            waynodenode = self.__osmdoc.createElement('nd')
-            waynodenode.setAttribute("ref", str(i))
-            waynode.appendChild(waynodenode)
-        
-        self.__add_way_tag_node(waynode, "ele", "%d" % int(height))
-        self.__add_way_tag_node(waynode, "contour", "elevation")
-        self.__add_way_tag_node(waynode, "contour_ext", self.__classify(height))
-        
-        return waynode
-    
-    
-    def add_geometry(self, height, geometry):
-        self.__current_id = self.__current_id - 1
-        way_id = self.__current_id
-        
-        self.__add_node_nodes(geometry)
-        self.__waynodes.append(self.__create_way_node(way_id, way_id - 1, self.__current_id, height))
-    
-    
-    def flush(self):
-        for waynode in self.__waynodes:
-            self.__osmnode.appendChild(waynode)
-        self.__osmdoc.appendChild(self.__osmnode)
-        
-        f = open(self.__filename, 'w')
-        self.__osmdoc.writexml(f, "", "", "\n")
-        f.close()
-
-
-
-# TODO class PbfOutput:
-
+    return sql
 
 
 # MAIN
 
-logging.basicConfig(level = logging.DEBUG)
+logging.basicConfig(format = '%(asctime)-15s %(message)s', level = logging.INFO)
 
 parser = argparse.ArgumentParser(description = 'Write contour lines from a file or database source ' + \
                                                'to an osm file')
 parser.add_argument('--datasource', dest = 'datasource', help = 'Database connectstring or filename')
-parser.add_argument('--layername', dest = 'layername', \
-                    help = 'Database table or layer name containing the contour data. ' + \
-                           'If omitted the first layer will be taken')
-parser.add_argument('--layer-feature', dest = 'layerfeat', \
-                    help = 'Database column or layer feature containg the elevation')
-parser.add_argument('--layer-geom', dest = 'layergeom', \
-                    help = 'Database column or layer geometry containing the contour')
+parser.add_argument('--tablename', dest = 'tablename', \
+                    help = 'Database table containing the contour data, only required for database ' + \
+                           'access.')
+parser.add_argument('--height-column', dest = 'heightcolumn', \
+                    help = 'Database column containg the elevation, only required for database access.')
+parser.add_argument('--contour-column', dest = 'contourcolumn', \
+                    help = 'Database column containing the contour, only required for database access.')
 parser.add_argument('--src-srs', dest = 'srcsrs', type = int, default = 4326, \
                     help = 'EPSG code of input data. Do not include the EPSG: prefix.')
-parser.add_argument('--dst-srs', dest = 'dstsrs', type = int, default = 4326, \
-                    help = 'EPSG code of output file. Do not include the EPSG: prefix.')
 parser.add_argument('--poly', dest = 'poly', \
                     help = 'Osmosis poly-file containing the boundaries to process')
 args = parser.parse_args()
@@ -408,10 +291,16 @@ if args.poly:
     poly.read_file(args.poly)
     #poly.set_boundaries(6.051, 6.1232, 50.4792, 50.5191)
 
-data_input = DataSource(args.datasource, args.layername, args.layerfeat, args.layergeom, poly, \
-                        args.srcsrs, args.dstsrs)
-data_output = OsmOutput('test.osm')
-#data_output = MatplotOutput()
+translation_object = ContourTranslation(args.datasource.startswith('PG:'), args.srcsrs, poly)
 
-data_input.process_data(data_output)
+osmdata = ogr2pbf.OsmData(translation_object)
+# create datasource and process data
+datasource = ogr2pbf.OgrDatasource(translation_object, source_epsg=args.srcsrs, gisorder=True)
+datasource.open_datasource(args.datasource)
+datasource.set_query(get_query(args.heightcolumn, args.contourcolumn, args.tablename, poly, args.srcsrs))
+osmdata.process(datasource)
+#create datawriter and write OSM data
+datawriter = ogr2pbf.OsmDataWriter('contour-osm.osm')
+#datawriter = PbfDataWriter('contour-osm.osm.pbf')
+osmdata.output(datawriter)
 
