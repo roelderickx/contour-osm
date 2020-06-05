@@ -18,7 +18,6 @@
 
 import sys, os, argparse, logging, ogr2pbf
 from xml.dom import minidom
-from osgeo import gdalconst
 from osgeo import ogr
 from osgeo import osr
 
@@ -195,25 +194,26 @@ class ContourTranslation(ogr2pbf.TranslationBase):
         return tags
 
 
-# TODO auto-detect layer properties
-'''
-def __get_layer_features(self, layer, preferred_feat, preferred_geom):
+def examine_layer(datasource, preferred_tablename, preferred_heightcol, preferred_contourcol):
     logging.info("Get layer features")
-    #layer = None
-    #if not self.layername:
-    #    if self.datasource.GetLayerCount() > 0:
-    #        layer = self.datasource.getLayer(0)
-    #        self.layername = layer.GetName()
-    #        
-    #        if self.datasource.GetLayerCount() > 1:
-    #            logging.warning("More than one layer found.")
-    #    else:
-    #        logging.error("No layer found and none was given.")
-    #else:
-    #    layer = self.datasource.GetLayer(self.layername)
-    if not self.layername:
-        self.layername = layer.GetName()
-    logging.info("Using layer %s" % self.layername)
+
+    tablename = preferred_tablename
+    heightcol = preferred_heightcol
+    contourcol = preferred_contourcol
+    
+    layer = None
+    if not preferred_tablename:
+        if datasource.get_layer_count() > 0:
+            (layer, reproject) = datasource.get_layer(0)
+            tablename = layer.GetName()
+            
+            if datasource.get_layer_count() > 1:
+                logging.warning("More than one layer found.")
+        else:
+            logging.error("No layer found and none was given.")
+    else:
+        layer = datasource.datasource.GetLayer(preferred_tablename)
+    logging.info("Using layer %s" % tablename)
 
     layerdef = layer.GetLayerDefn()
     
@@ -222,68 +222,81 @@ def __get_layer_features(self, layer, preferred_feat, preferred_geom):
                 for i in range(layerdef.GetFieldCount()) \
                 if layerdef.GetFieldDefn(i).GetName().lower() != 'id' ]
 
-    if preferred_feat and preferred_feat in features_without_id:
-        self.featname = preferred_feat
+    if preferred_heightcol and preferred_heightcol in features_without_id:
+        heightcol = preferred_heightcol
     elif len(features_without_id) == 0:
         logging.error("No feature found and none was given.")
     else:
-        self.featname = features_without_id[0]
+        heightcol = features_without_id[0]
         if len(features_without_id) > 1:
             logging.warning("More than one feature found.")
-    logging.info("Using feature %s" % self.featname)
+    logging.info("Using feature %s" % heightcol)
     
     geoms = [ layerdef.GetGeomFieldDefn(i).GetName() \
                     for i in range(layerdef.GetGeomFieldCount()) ]
-    if preferred_geom and preferred_geom in geoms:
-        self.geomname = preferred_geom
+    if preferred_contourcol and preferred_contourcol in geoms:
+        contourcol = preferred_contourcol
     elif len(geoms) == 0:
         logging.error("No geometry found and none was given.")
     else:
-        self.geomname = geoms[0]
+        contourcol = geoms[0]
         if len(geoms) > 1:
             logging.warning("More than one geometry found.")
-    logging.info("Using geometry %s" % self.geomname)
-'''
+    logging.info("Using geometry %s" % contourcol)
+    
+    return (tablename, heightcol, contourcol)
 
 
-def get_query(height_column, geom_column, tablename, boundaries, src_srs):
+def get_query(tablename, heightcolumn, geomcolumn, boundaries, src_srs):
     sql = ''
     
     if boundaries:
         sql = '''select %s, ST_Intersection(%s, p.polyline)
 from (select ST_GeomFromText(\'%s\', %d)  polyline) p, %s
 where ST_Intersects(%s, p.polyline)''' % \
-            (height_column, geom_column, \
+            (heightcolumn, geomcolumn, \
             boundaries.get_geometry(src_srs).ExportToWkt(), src_srs, \
-            tablename, geom_column)
+            tablename, geomcolumn)
     else:
         sql = 'select %s, %s from %s' % \
-            (height_column, geom_column, tablename)
+            (heightcolumn, geomcolumn, tablename)
 
     logging.info('Generated SQL statement: %s' % sql)
     
     return sql
 
 
+
 # MAIN
 
 logging.basicConfig(format = '%(asctime)-15s %(message)s', level = logging.INFO)
 
-parser = argparse.ArgumentParser(description = 'Write contour lines from a file or database source ' + \
-                                               'to an osm file')
-parser.add_argument('--datasource', dest = 'datasource', help = 'Database connectstring or filename')
-parser.add_argument('--tablename', dest = 'tablename', \
-                    help = 'Database table containing the contour data, only required for database ' + \
-                           'access.')
-parser.add_argument('--height-column', dest = 'heightcolumn', \
-                    help = 'Database column containg the elevation, only required for database access.')
-parser.add_argument('--contour-column', dest = 'contourcolumn', \
-                    help = 'Database column containing the contour, only required for database access.')
-parser.add_argument('--src-srs', dest = 'srcsrs', type = int, default = 4326, \
-                    help = 'EPSG code of input data. Do not include the EPSG: prefix.')
-parser.add_argument('--poly', dest = 'poly', \
-                    help = 'Osmosis poly-file containing the boundaries to process')
+parser = argparse.ArgumentParser(description='Write contour lines from a file or database source ' + \
+                                             'to an osm file')
+parser.add_argument('--datasource', dest='datasource', help='Database connectstring or filename', \
+                    required = True)
+parser.add_argument('--tablename', dest='tablename', \
+                    help='Database table containing the contour data, only required for database ' + \
+                         'access.')
+parser.add_argument('--height-column', dest='heightcolumn', \
+                    help='Database column containg the elevation. Contour-osm will try to find ' + \
+                         'this column in the given table when this parameter is omitted.')
+parser.add_argument('--contour-column', dest='contourcolumn', \
+                    help='Database column containg the contour. Contour-osm will try to find ' + \
+                         'this column in the given table when this parameter is omitted.')
+parser.add_argument('--src-srs', dest='srcsrs', type=int, default=4326, \
+                    help='EPSG code of input data. Do not include the EPSG: prefix.')
+parser.add_argument('--poly', dest='poly', \
+                    help='Osmosis poly-file containing the boundaries to process')
+parser.add_argument("--osm", dest="osm", action="store_true",
+                    help="Write the output as an OSM file in stead of a PBF file")
+# required output file
+parser.add_argument("output", metavar="OUTPUT", help="Output osm or pbf file")
 args = parser.parse_args()
+
+is_database_source = args.datasource.startswith('PG:')
+if is_database_source and not args.tablename:
+    parser.error('ERROR: tablename is required when the datasource is a database!')
 
 poly = None
 if args.poly:
@@ -291,16 +304,24 @@ if args.poly:
     poly.read_file(args.poly)
     #poly.set_boundaries(6.051, 6.1232, 50.4792, 50.5191)
 
-translation_object = ContourTranslation(args.datasource.startswith('PG:'), args.srcsrs, poly)
-
+translation_object = ContourTranslation(is_database_source, args.srcsrs, poly)
 osmdata = ogr2pbf.OsmData(translation_object)
+
 # create datasource and process data
 datasource = ogr2pbf.OgrDatasource(translation_object, source_epsg=args.srcsrs, gisorder=True)
 datasource.open_datasource(args.datasource)
-datasource.set_query(get_query(args.heightcolumn, args.contourcolumn, args.tablename, poly, args.srcsrs))
+if is_database_source:
+    (table, heightcol, contourcol) = \
+        examine_layer(datasource, args.tablename, args.heightcolumn, args.contourcolumn)
+    query = get_query(table, heightcol, contourcol, poly, args.srcsrs)
+    datasource.set_query(query)
 osmdata.process(datasource)
+
 #create datawriter and write OSM data
-datawriter = ogr2pbf.OsmDataWriter('contour-osm.osm')
-#datawriter = PbfDataWriter('contour-osm.osm.pbf')
-osmdata.output(datawriter)
+if args.osm:
+    datawriter = ogr2pbf.OsmDataWriter(args.output)
+    osmdata.output(datawriter)
+else:
+    datawriter = ogr2pbf.PbfDataWriter(args.output)
+    osmdata.output(datawriter)
 
