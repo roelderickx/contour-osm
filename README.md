@@ -14,10 +14,10 @@ Since the idea for this application is borrowed from [Phyghtmap](http://katze.tf
 
 There are a number of advantages to this all-in-one approach, especially for inexperienced users. But according to the unix philosophy one would rather write three separate programs to achieve every task independently. As it turns out those applications exist already:
 1. NASA's dba which allows downloading a specific area as well, or any browser if you really want to download manually
-2. the gdal suite, especially gdal_contour. this library is used internally by phyghtmap, however this information needs to be confirmed.
+2. The gdal suite, especially gdal_contour. This library is used internally by phyghtmap, however the contours are not calculated by GDAL.
 3. ogr2osm
 
-Another limitation of Phyghtmap is the lack of support for datasources other than SRTM or viewfinder. As described below in [Obtaining elevation data](#obtaining_elevation_data) there are more accurate datasources which are not necessarily distributed as hgt files.
+Another limitation of Phyghtmap is the lack of support for datasources other than SRTM or viewfinder. As described below in [obtaining elevation data](#obtaining-elevation-data) there are more accurate datasources which are not necessarily distributed as hgt files.
 
 Also, in some circumstances you may already have converted the downloaded files to contour lines and possibly you even inserted them in a database (for example when you use [hikingmap](https://github.com/roelderickx/hikingmap) or [opentopomap](https://github.com/der-stefan/OpenTopoMap)).
 
@@ -79,7 +79,7 @@ What you are looking for is often called DEM (digital elevation model) or DTM (d
 
 You may be able to download ready-to-use contour lines in the form of shapefiles from some sources, but most of the time you must convert the downloaded raster data to contours yourself. In such a case it is preferred to obtain either HGT or GeoTIFF files, but any other raster format supported by GDAL will do.
 
-Before calculating the contour lines you may need a few preparations. First of all it is common to find raster files where the elevation is expressed in centimeter in stead of meter. This is generally good from a precision perspective but you will need to convert using [gdal_calc.py](https://gdal.org/programs/gdal_calc.html):
+Before calculating the contour lines you may need a few preparations. First of all it is common to find raster files in which the elevation is expressed in centimeter in stead of meter. This is generally good from a precision perspective but you will need to convert using [gdal_calc.py](https://gdal.org/programs/gdal_calc.html):
 ```bash
 gdal_calc.py -A [infile] --calc "A/100" --outfile [outfile]
 ```
@@ -87,7 +87,6 @@ Next you can convert to projection of the file, however this is not strictly nec
 ```bash
 gdalwarp -s_srs EPSG:32628 -t_srs EPSG:4326 [infile] [outfile]
 ```
-
 Converting raster data to contour lines can be done with [gdal_contour](https://gdal.org/programs/gdal_contour.html). It may not be immediately clear which params you need but the default command for the SRTM datasource is:
 ```bash
 gdal_contour -i 10 -snodata 32767 -a height [infile] [outfile.shp]
@@ -95,11 +94,11 @@ shapeindex [outfile.shp]
 ```
 The -i parameter tells the program to create a contour line for every altitude which is divisible by 10, the -snodata parameter means that the value 32767 should be ignored because it's an indication there is no data available.
 
-NOTE: large areas covered by more than one datafile can either be merged together beforehand using [gdal_merge](https://gdal.org/programs/gdal_merge.html) or imported in a database. A detailed tutorial on how to use the GDAL tools is beyond the scope of this document but you can refer to the [hikingmap elevation import script](https://github.com/roelderickx/hm-render-mapnik/blob/master/elevation/import_in_db.sh).
+NOTE: large areas covered by more than one datafile can either be merged together beforehand using [gdal_merge](https://gdal.org/programs/gdal_merge.html) or imported in a database. A detailed tutorial on how to use the GDAL tools is beyond the scope of this document but you can refer to the [hikingmap elevation import script](https://github.com/roelderickx/hm-render-mapnik/blob/master/elevation/import_in_db.sh) for an example implementation.
 
 ## Requirements
 
-Contour-osm has two requirements. The first requirement is [GDAL with python bindings](https://gdal.org/) and the second is a modified version of ogr2osm called [ogr2pbf](https://github.com/roelderickx/ogr2pbf), for which you will need GDAL as well, among other dependencies.
+Contour-osm has two requirements. The first requirement is a modified version of ogr2osm called [ogr2pbf](https://github.com/roelderickx/ogr2pbf) and the second is [GDAL with python bindings](https://gdal.org/), which you need for ogr2pbf anyway.
 
 ## Usage
 
