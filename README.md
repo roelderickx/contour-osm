@@ -1,6 +1,6 @@
 # contour-osm
 
-contour-osm is an application to export contour lines to an osm or pbf file. The datasource can be any vector file format supported by gdal as well as a database.
+contour-osm is an application to export contour lines to an osm or pbf file. The datasource can be any vector file format supported by GDAL as well as a database.
 
 **NOTE:** This application is written to export the contour data to a Garmin GPS device. It is not intended to upload such contours into the openstreetmap database. **Do not upload the generated data to the OSM server!**
 
@@ -8,14 +8,14 @@ contour-osm is an application to export contour lines to an osm or pbf file. The
 
 ### Phyghtmap
 
-Since the idea for this application is borrowed from [Phyghtmap](http://katze.tfiu.de/projects/phyghtmap/) it's worth being credited here. Phyghtmap is a complete package which aims to do 3 tasks:
+Since the idea for this application is borrowed from [Phyghtmap](http://katze.tfiu.de/projects/phyghtmap/) it deserves being credited here. Phyghtmap is a complete package which aims to do 3 tasks:
 1. Download SRTM files from either NASA or viewfinder
 2. Generate contour lines
 3. Convert said contour lines to osm, o5m or pbf
 
-There are a number of advantages to this all-in-one approach, especially for inexperienced users. But according to the unix philosophy one would rather write three separate programs to achieve every task independently. As it turns out those applications exist already:
+There are a number of advantages to this all-in-one approach, especially for inexperienced users, but it would be interesting to have seperate programs for each of the steps above since they could be useful in other contexts as well. As it turns out these applications exist already:
 1. NASA's dba which allows downloading a specific area as well, or any browser if you really want to download manually
-2. The gdal suite, especially gdal_contour. This library is used internally by phyghtmap, however the contours are not calculated by GDAL.
+2. The GDAL suite, especially gdal_contour. This library is used internally by phyghtmap, however the contours are not calculated by GDAL.
 3. ogr2osm
 
 Another limitation of Phyghtmap is the lack of support for datasources other than SRTM or viewfinder. As described below in [obtaining elevation data](#obtaining-elevation-data) there are more accurate datasources which are not necessarily distributed as hgt files.
@@ -65,7 +65,7 @@ Then, run ogr2osm using the query and translation above:
 ogr2osm -t contour-translation.py -o test.osm --sql "select height, ST_Intersection(geom, p.polyline) from (select ST_GeomFromText('MULTIPOLYGON (((6.051 50.5191 0,6.1232 50.5191 0,6.1232 50.4792 0,6.051 50.4792 0,6.051 50.5191 0)))', 4326)  polyline) p, elevation where ST_Intersects(geom, p.polyline)" "PG:dbname=gis user=gis host=localhost"
 ```
 
-The resulting OSM file is compatible with the output of [Phyghtmap](http://katze.tfiu.de/projects/phyghtmap/) and can be converted to a Garmin map image using [mkgmap](http://www.mkgmap.org.uk/download/mkgmap.html). For more information on this step see [the OSM wiki](https://wiki.openstreetmap.org/wiki/Mkgmap).
+The resulting OSM file is compatible with the output of Phyghtmap and can be converted to a Garmin map image using [mkgmap](http://www.mkgmap.org.uk/download/mkgmap.html). For more information on this step see [the OSM wiki](https://wiki.openstreetmap.org/wiki/Mkgmap).
 
 ## Obtaining elevation data
 
@@ -76,7 +76,9 @@ What you are looking for is often called DEM (digital elevation model) or DTM (d
 * However, version 3 of NASA's SRTM seems to contain large voids, a [void-filled version](https://e4ftl01.cr.usgs.gov/MEASURES/SRTMGL1.003/2000.02.11/) is around as well. You need to register first and the user account is not the same as for the EarthExplorer.
 * [Viewfinder Panoramas](http://www.viewfinderpanoramas.org/dem3.html). This source offers global coverage in a 3-arc second resolution, it is the only option beyond 60 degrees north. There is a limited selection of areas in a 1 arc-second resolution as well.
 * Resolution does not always equal accuracy, data may have been interpolated from lower resolutions or inserted from other sources. For a limited selection of European countries there is a 1-arc second resolution available with a [higher accuracy](https://data.opendataportal.at/dataset/dtm-europe). The data is obtained using laserscan (LiDAR) in stead of satelites.
-* Commercial elevation models, which may offer a higher resolution or more accurate data. Keep in mind that the data may be offered in a different projection, use the GDAL tools to reproject the data. Also note that each country has a different definition of sea level, your altitude lines may shift at the borders when importing several elevation models in the same database.
+* Commercial elevation models, which may offer a higher resolution or more accurate data. Keep in mind that the data may be offered in a different projection, use the GDAL tools to reproject the data. Also note that each country has a different definition of sea level, your altitude lines may shift at the borders when combining several elevation models.
+
+## Converting elevation data to contour lines
 
 You may be able to download ready-to-use contour lines in the form of shapefiles from some sources, but most of the time you must convert the downloaded raster data to contours yourself. In such a case it is preferred to obtain either HGT or GeoTIFF files, but any other raster format supported by GDAL will do.
 
