@@ -302,12 +302,11 @@ poly = None
 if args.poly:
     poly = Polyfile()
     poly.read_file(args.poly)
-    #poly.set_boundaries(6.051, 6.1232, 50.4792, 50.5191)
 
+# create the translation object
 translation_object = ContourTranslation(is_database_source, args.srcsrs, poly)
-osmdata = ogr2pbf.OsmData(translation_object)
 
-# create datasource and process data
+# create and open the datasource
 datasource = ogr2pbf.OgrDatasource(translation_object, source_epsg=args.srcsrs, gisorder=True)
 datasource.open_datasource(args.datasource)
 if is_database_source:
@@ -315,6 +314,9 @@ if is_database_source:
         examine_layer(datasource, args.tablename, args.heightcolumn, args.contourcolumn)
     query = get_query(table, heightcol, contourcol, poly, args.srcsrs)
     datasource.set_query(query)
+
+# convert the contour lines to osm
+osmdata = ogr2pbf.OsmData(translation_object)
 osmdata.process(datasource)
 
 #create datawriter and write OSM data

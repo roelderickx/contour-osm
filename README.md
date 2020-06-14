@@ -1,7 +1,8 @@
 # contour-osm
 
 contour-osm is an application to export contour lines to an osm or pbf file. The datasource can be any vector file format supported by gdal as well as a database.
-**NOTE:** This application is written to export the contour data to a Garmin GPS device. It is not intended to upload such contours into OSM database. **Do not upload the generated data to the OSM server!**
+
+**NOTE:** This application is written to export the contour data to a Garmin GPS device. It is not intended to upload such contours into the openstreetmap database. **Do not upload the generated data to the OSM server!**
 
 ## History
 
