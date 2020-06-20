@@ -21,6 +21,8 @@ from xml.dom import minidom
 from osgeo import ogr
 from osgeo import osr
 
+logging.basicConfig(format = '%(message)s', level = logging.INFO)
+
 class Polyfile:
     def __init__(self):
         self.__filename = None
@@ -118,13 +120,16 @@ class Polyfile:
 
 
 class ContourTranslation(ogr2pbf.TranslationBase):
-    def __init__(self, is_database_source, src_srs, poly):
+    def __init__(self, is_database_source, src_srs, poly, major_category, medium_category):
         self.is_database_source = is_database_source
         self.src_srs = src_srs
         self.boundaries = None
         if poly:
             self.boundaries = poly.get_geometry(src_srs)
+        self.major_category = major_category
+        self.medium_category = medium_category
         
+        # intersection datasource, should not go out of scope as long as the intersection layer is used
         self.intersect_ds = None
     
     
@@ -184,14 +189,55 @@ class ContourTranslation(ogr2pbf.TranslationBase):
             tags['contour'] = 'elevation'
             
             height = int(float(attrs['height']))
-            if height % 500 == 0:
+            if height % self.major_category == 0:
                 tags['contour_ext'] = 'elevation_major'
-            elif height % 100 == 0:
+            elif height % self.medium_category == 0:
                 tags['contour_ext'] = 'elevation_medium'
             else:
                 tags['contour_ext'] = 'elevation_minor'
         
         return tags
+
+
+
+def parse_commandline():
+    parser = argparse.ArgumentParser(description='Write contour lines from a file or database ' +
+                                                 'source to an osm file')
+    # datasource options
+    parser.add_argument('--datasource', dest='datasource', help='Database connectstring or filename',
+                        required = True)
+    parser.add_argument('--tablename', dest='tablename',
+                        help='Database table containing the contour data, only required for ' +
+                             'database access.')
+    parser.add_argument('--height-column', dest='heightcolumn',
+                        help='Database column containg the elevation. Contour-osm will try to find ' +
+                             'this column in the given table when this parameter is omitted.')
+    parser.add_argument('--contour-column', dest='contourcolumn',
+                        help='Database column containg the contour. Contour-osm will try to find ' +
+                             'this column in the given table when this parameter is omitted.')
+    # input parameters
+    parser.add_argument('--src-srs', dest='srcsrs', type=int, default=4326,
+                        help='EPSG code of input data. Do not include the EPSG: prefix.')
+    parser.add_argument('--poly', dest='poly',
+                        help='Osmosis poly-file containing the boundaries to process')
+    # output parameters
+    parser.add_argument('-M', '--major', dest='majorcat', metavar='CATEGORY',
+                        type=int, default=500,
+                        help='Major elevation category (default=%(default)s)')
+    parser.add_argument('-m', '--medium', dest='mediumcat', metavar='CATEGORY',
+                        type=int, default=100,
+                        help='Medium elevation category (default=%(default)s)')
+    parser.add_argument('--osm', dest='osm', action='store_true',
+                        help='Write the output as an OSM file in stead of a PBF file')
+    # required output file
+    parser.add_argument("output", metavar="OUTPUT", help="Output osm or pbf file")
+    params = parser.parse_args()
+
+    params.is_database_source = params.datasource.startswith('PG:')
+    if params.is_database_source and not params.tablename:
+        parser.error('ERROR: tablename is required when the datasource is a database!')
+    
+    return params
 
 
 def examine_layer(datasource, preferred_tablename, preferred_heightcol, preferred_contourcol):
@@ -266,64 +312,41 @@ where ST_Intersects(%s, p.polyline)''' % \
     return sql
 
 
+def main():
+    params = parse_commandline()
 
-# MAIN
+    poly = None
+    if params.poly:
+        poly = Polyfile()
+        poly.read_file(params.poly)
 
-logging.basicConfig(format = '%(asctime)-15s %(message)s', level = logging.INFO)
+    # create the translation object
+    translation_object = ContourTranslation(params.is_database_source, params.srcsrs, poly,
+                                            params.majorcat, params.mediumcat)
 
-parser = argparse.ArgumentParser(description='Write contour lines from a file or database source ' + \
-                                             'to an osm file')
-parser.add_argument('--datasource', dest='datasource', help='Database connectstring or filename', \
-                    required = True)
-parser.add_argument('--tablename', dest='tablename', \
-                    help='Database table containing the contour data, only required for database ' + \
-                         'access.')
-parser.add_argument('--height-column', dest='heightcolumn', \
-                    help='Database column containg the elevation. Contour-osm will try to find ' + \
-                         'this column in the given table when this parameter is omitted.')
-parser.add_argument('--contour-column', dest='contourcolumn', \
-                    help='Database column containg the contour. Contour-osm will try to find ' + \
-                         'this column in the given table when this parameter is omitted.')
-parser.add_argument('--src-srs', dest='srcsrs', type=int, default=4326, \
-                    help='EPSG code of input data. Do not include the EPSG: prefix.')
-parser.add_argument('--poly', dest='poly', \
-                    help='Osmosis poly-file containing the boundaries to process')
-parser.add_argument("--osm", dest="osm", action="store_true",
-                    help="Write the output as an OSM file in stead of a PBF file")
-# required output file
-parser.add_argument("output", metavar="OUTPUT", help="Output osm or pbf file")
-args = parser.parse_args()
+    # create and open the datasource
+    datasource = ogr2pbf.OgrDatasource(translation_object, source_epsg=params.srcsrs, gisorder=True)
+    datasource.open_datasource(params.datasource)
+    if params.is_database_source:
+        (table, heightcol, contourcol) = \
+            examine_layer(datasource, params.tablename, params.heightcolumn, params.contourcolumn)
+        query = get_query(table, heightcol, contourcol, poly, params.srcsrs)
+        datasource.set_query(query)
 
-is_database_source = args.datasource.startswith('PG:')
-if is_database_source and not args.tablename:
-    parser.error('ERROR: tablename is required when the datasource is a database!')
+    # convert the contour lines to osm
+    osmdata = ogr2pbf.OsmData(translation_object)
+    osmdata.process(datasource)
 
-poly = None
-if args.poly:
-    poly = Polyfile()
-    poly.read_file(args.poly)
+    #create datawriter and write OSM data
+    if params.osm:
+        datawriter = ogr2pbf.OsmDataWriter(params.output)
+        osmdata.output(datawriter)
+    else:
+        datawriter = ogr2pbf.PbfDataWriter(params.output)
+        osmdata.output(datawriter)
 
-# create the translation object
-translation_object = ContourTranslation(is_database_source, args.srcsrs, poly)
 
-# create and open the datasource
-datasource = ogr2pbf.OgrDatasource(translation_object, source_epsg=args.srcsrs, gisorder=True)
-datasource.open_datasource(args.datasource)
-if is_database_source:
-    (table, heightcol, contourcol) = \
-        examine_layer(datasource, args.tablename, args.heightcolumn, args.contourcolumn)
-    query = get_query(table, heightcol, contourcol, poly, args.srcsrs)
-    datasource.set_query(query)
 
-# convert the contour lines to osm
-osmdata = ogr2pbf.OsmData(translation_object)
-osmdata.process(datasource)
-
-#create datawriter and write OSM data
-if args.osm:
-    datawriter = ogr2pbf.OsmDataWriter(args.output)
-    osmdata.output(datawriter)
-else:
-    datawriter = ogr2pbf.PbfDataWriter(args.output)
-    osmdata.output(datawriter)
+if __name__ == '__main__':
+    main()
 
