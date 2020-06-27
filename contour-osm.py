@@ -334,7 +334,7 @@ def main():
         datasource.set_query(query)
 
     # convert the contour lines to osm
-    osmdata = ogr2pbf.OsmData(translation_object)
+    osmdata = ogr2pbf.OsmData(translation_object, max_points_in_way=16000)
     osmdata.process(datasource)
 
     #create datawriter and write OSM data
