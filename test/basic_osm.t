@@ -56,3 +56,10 @@ epsg3812osm-poly:
   $ xmllint --xpath '/osm/node/@id|/osm/node/@lat|/osm/node/@lon' --format epsg3812-poly.osm | diff -uNr - $TESTDIR/epsg3812_nodes.txt
   $ xmllint --xpath '/osm/way' --format epsg3812-poly.osm | diff -uNr - $TESTDIR/ways.txt
 
+epsg4326osm-poly-m:
+  $ contourosm --osm --datasource $TESTDIR/shapefiles/N50E006c10.shp --poly $TESTDIR/shapefiles/botrange.poly -m 20 -M 30 epsg4326-poly.osm
+  Amount of features in source: 23691
+  Amount of intersections found: 35
+  $ xmllint --xpath '/osm/node/@id|/osm/node/@lat|/osm/node/@lon' --format epsg4326-poly.osm | diff -uNr - $TESTDIR/epsg4326_nodes.txt
+  $ xmllint --xpath '/osm/way' --format epsg4326-poly.osm | diff -uNr - $TESTDIR/ways-m.txt
+
