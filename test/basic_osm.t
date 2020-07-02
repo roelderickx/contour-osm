@@ -39,18 +39,20 @@ usage:
                           Medium elevation category (default=100)
     --osm                 Write the output as an OSM file in stead of a PBF file
 
-epsg4326osm:
-  $ contourosm --osm --datasource $TESTDIR/shapefiles/N50E006c10.shp $TESTDIR/epsg4326.osm
+#epsg4326osm:
+#  $ contourosm --osm --datasource $TESTDIR/shapefiles/N50E006c10.shp $TESTDIR/epsg4326.osm
 
 epsg4326osm-poly:
   $ contourosm --osm --datasource $TESTDIR/shapefiles/N50E006c10.shp --poly $TESTDIR/shapefiles/botrange.poly epsg4326-poly.osm
   Amount of features in source: 23691
-  Amount of intersections found: 34
-  $ xmllint --xpath '/osm/node/@lat' --format epsg4326-poly.osm | diff -uNr - $TESTDIR/epsg4326-poly.xml
+  Amount of intersections found: 35
+  $ xmllint --xpath '/osm/node/@id|/osm/node/@lat|/osm/node/@lon' --format epsg4326-poly.osm | diff -uNr - $TESTDIR/epsg4326_nodes.txt
+  $ xmllint --xpath '/osm/way' --format epsg4326-poly.osm | diff -uNr - $TESTDIR/ways.txt
 
 epsg3812osm-poly:
   $ contourosm --osm --datasource $TESTDIR/shapefiles/N50E006c10_3812.shp --src-srs 3812 --poly $TESTDIR/shapefiles/botrange.poly epsg3812-poly.osm
   Amount of features in source: 23691
-  Amount of intersections found: 34
-  $ xmllint --xpath '/osm/node/@lon' --format epsg3812-poly.osm | diff -uNr - $TESTDIR/epsg3812-poly.xml
+  Amount of intersections found: 35
+  $ xmllint --xpath '/osm/node/@id|/osm/node/@lat|/osm/node/@lon' --format epsg3812-poly.osm | diff -uNr - $TESTDIR/epsg3812_nodes.txt
+  $ xmllint --xpath '/osm/way' --format epsg3812-poly.osm | diff -uNr - $TESTDIR/ways.txt
 
