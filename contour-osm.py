@@ -16,7 +16,7 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-import sys, os, argparse, logging, ogr2pbf
+import sys, os, argparse, logging, ogr2osm
 from xml.dom import minidom
 from osgeo import ogr
 from osgeo import osr
@@ -119,7 +119,7 @@ class Polyfile:
 
 
 
-class ContourTranslation(ogr2pbf.TranslationBase):
+class ContourTranslation(ogr2osm.TranslationBase):
     def __init__(self, is_database_source, src_srs, poly, major_category, medium_category):
         self.is_database_source = is_database_source
         self.src_srs = src_srs
@@ -325,7 +325,7 @@ def main():
                                             params.majorcat, params.mediumcat)
 
     # create and open the datasource
-    datasource = ogr2pbf.OgrDatasource(translation_object, source_epsg=params.srcsrs, gisorder=True)
+    datasource = ogr2osm.OgrDatasource(translation_object, source_epsg=params.srcsrs, gisorder=True)
     datasource.open_datasource(params.datasource)
     if params.is_database_source:
         (table, heightcol, contourcol) = \
@@ -334,15 +334,15 @@ def main():
         datasource.set_query(query)
 
     # convert the contour lines to osm
-    osmdata = ogr2pbf.OsmData(translation_object, max_points_in_way=16000)
+    osmdata = ogr2osm.OsmData(translation_object, max_points_in_way=16000)
     osmdata.process(datasource)
 
     #create datawriter and write OSM data
     if params.osm:
-        datawriter = ogr2pbf.OsmDataWriter(params.output)
+        datawriter = ogr2osm.OsmDataWriter(params.output)
         osmdata.output(datawriter)
     else:
-        datawriter = ogr2pbf.PbfDataWriter(params.output)
+        datawriter = ogr2osm.PbfDataWriter(params.output)
         osmdata.output(datawriter)
 
 
