@@ -37,27 +37,32 @@ Remark: contour-osm contains a Polyfile class to convert osmosis poly-files to W
 
 Create a translation for ogr2osm and save as `contour-translation.py`:
 ```python
-# A translation function for contour data
+'''
+A translation class for contour data
+'''
 
-def filterTags(attrs):
-    if not attrs:
-        return
-    
-    tags={}
-    
-    if 'height' in attrs:
-        tags['ele'] = attrs['height']
-        tags['contour'] = 'elevation'
+import ogr2osm
+
+class ContourTranslation(ogr2osm.TranslationBase):
+    def filter_tags(self, attrs):
+        if not attrs:
+            return
         
-        height = int(attrs['height'])
-        if height % 500 == 0:
-            tags['contour_ext'] = 'elevation_major'
-        elif height % 100 == 0:
-            tags['contour_ext'] = 'elevation_medium'
-        else:
-            tags['contour_ext'] = 'elevation_minor'
-    
-    return tags
+        tags={}
+        
+        if 'height' in attrs:
+            tags['ele'] = attrs['height']
+            tags['contour'] = 'elevation'
+            
+            height = int(attrs['height'])
+            if height % 500 == 0:
+                tags['contour_ext'] = 'elevation_major'
+            elif height % 100 == 0:
+                tags['contour_ext'] = 'elevation_medium'
+            else:
+                tags['contour_ext'] = 'elevation_minor'
+        
+        return tags
 ```
 
 Then, run ogr2osm using the query and translation above:
@@ -101,7 +106,9 @@ NOTE: large areas covered by more than one datafile can either be merged togethe
 
 ## Requirements
 
-Contour-osm has two requirements. The first requirement is a modified version of ogr2osm called [ogr2pbf](https://github.com/roelderickx/ogr2pbf) and the second is [GDAL with python bindings](https://gdal.org/), which you need for ogr2pbf anyway.
+Contour-osm has two requirements:
+- [ogr2osm](https://github.com/roelderickx/ogr2osm)
+- [GDAL with python bindings](https://gdal.org/)
 
 ## Usage
 
