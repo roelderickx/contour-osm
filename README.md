@@ -102,7 +102,7 @@ shapeindex [outfile.shp]
 ```
 The -i parameter tells the program to create a contour line for every altitude which is divisible by 10, the -snodata parameter means that the value 32767 should be ignored because it's an indication there is no data available.
 
-NOTE: large areas covered by more than one datafile can either be merged together beforehand using [gdal_merge](https://gdal.org/programs/gdal_merge.html) or imported in a database. A detailed tutorial on how to use the GDAL tools is beyond the scope of this document but you can refer to the [hikingmap elevation import script](https://github.com/roelderickx/hm-render-mapnik/blob/master/elevation/import_in_db.sh) for an example implementation.
+NOTE: large areas covered by more than one datafile can either be merged together beforehand using [gdal_merge](https://gdal.org/programs/gdal_merge.html) or imported in a database. A detailed tutorial on how to use the GDAL tools is beyond the scope of this document but you can refer to the [hikingmap elevation import script](https://github.com/roelderickx/hm-render-mapnik/blob/main/elevation/import_in_db.sh) for an example implementation.
 
 ## Requirements
 
