@@ -13,7 +13,7 @@ Since the idea for this application is borrowed from [Phyghtmap](http://katze.tf
 2. Generate contour lines
 3. Convert said contour lines to osm, o5m or pbf
 
-There are a number of advantages to this all-in-one approach, especially for inexperienced users, but it would be interesting to have seperate programs for each of the steps above since they could be useful in other contexts as well. As it turns out these applications exist already:
+There are a number of advantages to this all-in-one approach, especially for inexperienced users, but it would be interesting to have separate programs for each of the steps above since they could be useful in other contexts as well. As it turns out these applications exist already:
 1. NASA's dba which allows downloading a specific area as well, or any browser if you really want to download manually
 2. The GDAL suite, especially gdal_contour. This library is used internally by phyghtmap, however the contours are not calculated by GDAL.
 3. ogr2osm
@@ -80,7 +80,7 @@ What you are looking for is often called DEM (digital elevation model) or DTM (d
 * NASA's Shuttle Radar Topography Mission, version 3. This source covers the same area as version 2.1, but in a 1 arc-second resolution. You need to register first before having access to the [EarthExplorer](https://earthexplorer.usgs.gov/) and it is suggested to use the Bulk Download Application to download vast areas. For more information please consult [the help index](https://lta.cr.usgs.gov/EEHelp/ee_help).
 * However, version 3 of NASA's SRTM seems to contain large voids, a [void-filled version](https://e4ftl01.cr.usgs.gov/MEASURES/SRTMGL1.003/2000.02.11/) is around as well. You need to register first and the user account is not the same as for the EarthExplorer.
 * [Viewfinder Panoramas](http://www.viewfinderpanoramas.org/dem3.html). This source offers global coverage in a 3-arc second resolution, it is the only option beyond 60 degrees north. There is a limited selection of areas in a 1 arc-second resolution as well.
-* Resolution does not always equal accuracy, data may have been interpolated from lower resolutions or inserted from other sources. For a limited selection of European countries there is a 1-arc second resolution available with a [higher accuracy](https://data.opendataportal.at/dataset/dtm-europe). The data is obtained using laserscan (LiDAR) in stead of satelites.
+* Resolution does not always equal accuracy, data may have been interpolated from lower resolutions or inserted from other sources. For a limited selection of European countries there is a 1-arc second resolution available with a [higher accuracy](https://sonny.4lima.de/). The data is obtained using laserscan (LiDAR) in stead of satelites.
 * Commercial elevation models, which may offer a higher resolution or more accurate data. Keep in mind that the data may be offered in a different projection, use the GDAL tools to reproject the data. Also note that each country has a different definition of sea level, your altitude lines may shift at the borders when combining several elevation models.
 
 ## Converting elevation data to contour lines
